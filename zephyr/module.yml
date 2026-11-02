@@ -1,0 +1,6 @@
+# sentry-micro as a Zephyr module. Add this repository to ZEPHYR_EXTRA_MODULES (or to your
+# west manifest) and set CONFIG_SENTRY_MICRO=y; see examples/zephyr_basic.
+name: sentry-micro
+build:
+  cmake: zephyr
+  kconfig: zephyr/Kconfig

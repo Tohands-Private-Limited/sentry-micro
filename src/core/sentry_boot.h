@@ -13,7 +13,30 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SENTRY_MICRO_SDK_NAME "sentry.micro.esp32"
+/*
+ * The SDK name is per platform, not per project, because it is wire-visible: it is the
+ * `sdk.name` on every event and the product half of the user agent. Sentry groups SDK
+ * adoption and version health by it, so a Zephyr fleet reporting as `esp32` would be
+ * indistinguishable from an Arduino one in exactly the view meant to tell them apart.
+ * Chosen at compile time because the platform is; `-D` overrides it for a port that is
+ * neither.
+ */
+#ifndef SENTRY_MICRO_SDK_NAME
+#    if defined(__ZEPHYR__)
+#        define SENTRY_MICRO_SDK_NAME "sentry.micro.zephyr"
+#    else
+#        define SENTRY_MICRO_SDK_NAME "sentry.micro.esp32"
+#    endif
+#endif
+/* The `os.name` context beside the SDK name: the RTOS the version string next to it
+ * belongs to. Per platform for the same reason, and overridable the same way. */
+#ifndef SENTRY_MICRO_OS_NAME
+#    if defined(__ZEPHYR__)
+#        define SENTRY_MICRO_OS_NAME "zephyr"
+#    else
+#        define SENTRY_MICRO_OS_NAME "esp-idf"
+#    endif
+#endif
 #define SENTRY_MICRO_SDK_VERSION "0.1.0"
 #define SENTRY_MICRO_SDK_USER_AGENT SENTRY_MICRO_SDK_NAME "/" SENTRY_MICRO_SDK_VERSION
 

@@ -1,0 +1,51 @@
+# sentry-micro on Zephyr.
+
+menuconfig SENTRY_MICRO
+	bool "sentry-micro, the Sentry SDK for microcontrollers"
+	select HWINFO
+	select ENTROPY_GENERATOR
+	imply SYS_HEAP_RUNTIME_STATS
+	help
+	  Report boots and errors to Sentry from a device with no Sentry
+	  knowledge on the far side of its link. HWINFO supplies the reset
+	  cause and the factory device id; the entropy driver mints event ids,
+	  which must not collide across a fleet. Heap runtime statistics are
+	  what the free-heap numbers on every event are read from; without
+	  them those fields report 0.
+
+if SENTRY_MICRO
+
+config SENTRY_MICRO_TRANSPORT_SERIAL
+	bool "Serial relay transport"
+	default y
+	depends on SERIAL
+	help
+	  Deliver envelopes through a host on the other end of a UART, using
+	  the same @SENTRY-RELAY/1 protocol as the Arduino SerialTransport.
+	  Run scripts/serial_relay.py on the host.
+
+config SENTRY_MICRO_SERIAL_TIMEOUT_MS
+	int "How long to wait for the serial relay to answer, in ms"
+	default 15000
+	depends on SENTRY_MICRO_TRANSPORT_SERIAL
+	help
+	  Covers the host's own DNS, TLS and round trip, so it is generous.
+	  An unanswered request times out into "no route", which is what the
+	  caller would act on anyway; the only cost of a long timeout is the
+	  wait when no relay is running.
+
+endif # SENTRY_MICRO
+
+# Event timestamps and uptimes are 64-bit and formatted with %llu. Picolibc's default
+# integer-only printf drops the "ll" and prints the wrong number with no error, so prefer the
+# level that keeps it. A choice member cannot be selected; adding a default to the choice is
+# how a module steers it. The float level carries long long too, and is what this resolves to
+# when the FPU pulls in floating-point printf. sentry_device_zephyr.c refuses to build if
+# neither ends up chosen.
+if SENTRY_MICRO && PICOLIBC
+
+choice PICOLIBC_IO_LEVEL
+	default PICOLIBC_IO_LONG_LONG
+endchoice
+
+endif

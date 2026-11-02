@@ -169,7 +169,15 @@ cd examples/wifi_basic && pio run && pio run -e esp32-c6
 The `core/` vs `device/` split is load-bearing: everything in `core/` is freestanding C that
 compiles on a laptop, which is why the wire format, the ring buffer and the relay framing are
 all testable in milliseconds without hardware. Put anything portable there and it gets tests
-for free. Anything that touches ESP-IDF goes in `device/`.
+for free. Anything that touches ESP-IDF goes in `device/`; anything that touches Zephyr goes
+in `device/zephyr/` or `transport/zephyr/`, wrapped whole in `#if defined(__ZEPHYR__)`,
+because PlatformIO compiles every file under `src/` for the Arduino builds too.
+
+There is a sixth build to keep green when you touch `core/` or the Zephyr files:
+[`examples/zephyr_basic`](examples/zephyr_basic/README.md) for `esp32s3_devkitc`, built
+with `west` from a Zephyr workspace. That README has the exact commands, including how to
+keep `west` and PlatformIO in a `.venv/` inside this repository rather than in your home
+directory.
 
 CI runs the host tests, a format check, and all five variant builds on every push.
 

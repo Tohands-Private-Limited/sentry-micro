@@ -166,28 +166,47 @@ def main() -> int:
     print(f"[relay] listening on {args.port} @ {args.baud}", file=sys.stderr)
     print(f"[relay] will POST only to https://{allowed_host}/", file=sys.stderr)
 
-    with serial.Serial(args.port, args.baud, timeout=0.2) as port:
-        buffer = bytearray()
-        while True:
-            chunk = port.read(4096)
-            if not chunk:
-                continue
-            buffer.extend(chunk)
+    # Reopen rather than exit when the port goes away. A chip whose console is its own
+    # USB-Serial-JTAG (ESP32-S3, -C3, -C6 without a bridge) drops off the bus on every reset,
+    # including the reboot after a crash — the exact moment there is something to relay — and
+    # comes back under the same name a second later.
+    while True:
+        try:
+            with serial.Serial(args.port, args.baud, timeout=0.2) as port:
+                relay_forever(port, allowed_host, args.timeout)
+        except (serial.SerialException, OSError) as error:
+            print(f"[relay] {args.port}: {error}; waiting for it to come back", file=sys.stderr)
+            wait_for_port(args.port)
 
-            while b"\n" in buffer:
-                raw, _, rest = buffer.partition(b"\n")
-                buffer = bytearray(rest)
-                line = raw.decode("utf-8", "replace").rstrip("\r")
 
-                if line.startswith(REQUEST_PREFIX):
-                    handle_request(line, port, allowed_host, args.timeout)
-                else:
-                    # Ordinary device output: pass it through so this can replace the monitor.
-                    print(line, flush=True)
+def wait_for_port(path: str) -> None:
+    """Block until `path` exists, polling, so the port is opened the moment it re-enumerates."""
+    while not os.path.exists(path):
+        time.sleep(0.1)
 
-            if len(buffer) > MAX_LINE_BYTES:
-                print("[relay] dropping an over-long line", file=sys.stderr)
-                buffer.clear()
+
+def relay_forever(port, allowed_host: str, timeout: float) -> None:
+    buffer = bytearray()
+    while True:
+        chunk = port.read(4096)
+        if not chunk:
+            continue
+        buffer.extend(chunk)
+
+        while b"\n" in buffer:
+            raw, _, rest = buffer.partition(b"\n")
+            buffer = bytearray(rest)
+            line = raw.decode("utf-8", "replace").rstrip("\r")
+
+            if line.startswith(REQUEST_PREFIX):
+                handle_request(line, port, allowed_host, timeout)
+            else:
+                # Ordinary device output: pass it through so this can replace the monitor.
+                print(line, flush=True)
+
+        if len(buffer) > MAX_LINE_BYTES:
+            print("[relay] dropping an over-long line", file=sys.stderr)
+            buffer.clear()
 
 
 if __name__ == "__main__":
