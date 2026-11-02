@@ -17,6 +17,7 @@ if(CONFIG_SENTRY_MICRO)
   zephyr_library_sources(
     ${SENTRY_MICRO_SRC}/core/sentry_base64.c
     ${SENTRY_MICRO_SRC}/core/sentry_buffer.c
+    ${SENTRY_MICRO_SRC}/core/sentry_coredump.c
     ${SENTRY_MICRO_SRC}/core/sentry_device_info.c
     ${SENTRY_MICRO_SRC}/core/sentry_dsn.c
     ${SENTRY_MICRO_SRC}/core/sentry_envelope.c
@@ -32,6 +33,17 @@ if(CONFIG_SENTRY_MICRO)
     ${SENTRY_MICRO_SRC}/device/zephyr/sentry_device_zephyr.c
     ${SENTRY_MICRO_SRC}/device/zephyr/sentry_coredump_zephyr.c
   )
+
+  # The crash record reads Xtensa's exception frame and walks the stack from it. Zephyr's
+  # public headers declare that frame only as a placeholder; the real layout
+  # (xtensa_asm2_context.h), the stack-bounds checks (xtensa_stack.h) and the walker's entry
+  # points (xtensa_backtrace.h) are in the architecture's internal include directory. They are
+  # used exactly as the kernel's own console backtrace uses them, by a module that is already
+  # tied to one Zephyr tree, and a change to any of them is a compile error here rather than a
+  # silent misread. Xtensa builds only, and only for this library.
+  if(CONFIG_XTENSA)
+    zephyr_library_include_directories(${ZEPHYR_BASE}/arch/xtensa/include)
+  endif()
 
   zephyr_library_sources_ifdef(CONFIG_SENTRY_MICRO_TRANSPORT_SERIAL
     ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_transport_serial.c

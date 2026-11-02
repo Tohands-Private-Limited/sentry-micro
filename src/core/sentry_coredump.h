@@ -71,6 +71,39 @@ typedef struct {
     char app_elf_sha256[33];
 } sentry_coredump_t;
 
+/*
+ * Architecture vocabulary for `exception_type`.
+ *
+ * Shared by every port that reads a crash off an Xtensa or RISC-V core, so the same fault
+ * gets the same issue title whether it came from ESP-IDF's core dump or from Zephyr's fatal
+ * error hook. In `core/` rather than `device/` because they are pure lookups, and here they
+ * can be tested on a laptop.
+ */
+
+/**
+ * Name of an Xtensa EXCCAUSE value, spelled as ESP-IDF's panic handler prints it.
+ *
+ * Empty for causes with no name rather than NULL, so the result can go straight into a
+ * format string; the caller decides what an unnamed cause should read as.
+ */
+const char *sentry_xtensa_exccause_name(uint32_t cause);
+
+/**
+ * Whether EXCVADDR holds the faulting data address for this EXCCAUSE.
+ *
+ * True only for the load/store faults. For every other cause the register is stale, and
+ * reporting it would attach a confident-looking address to a fault it has nothing to do with.
+ */
+bool sentry_xtensa_exccause_has_data_addr(uint32_t cause);
+
+/**
+ * Name of a RISC-V `mcause` exception code, spelled as ESP-IDF's panic handler prints it.
+ *
+ * Exception codes only: an interrupt sets the high bit and never reaches a crash record.
+ * Empty for codes with no name, as above.
+ */
+const char *sentry_riscv_mcause_name(uint32_t mcause);
+
 #ifdef __cplusplus
 }
 #endif

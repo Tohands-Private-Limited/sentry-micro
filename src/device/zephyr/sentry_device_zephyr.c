@@ -9,6 +9,7 @@
 #if defined(__ZEPHYR__)
 
 #    include "../sentry_device.h"
+#    include "sentry_persist_zephyr.h"
 
 #    include <errno.h>
 #    include <stdio.h>
@@ -18,7 +19,6 @@
 #    include <zephyr/devicetree.h>
 #    include <zephyr/drivers/hwinfo.h>
 #    include <zephyr/kernel.h>
-#    include <zephyr/linker/section_tags.h>
 #    include <zephyr/random/random.h>
 #    include <zephyr/sys/clock.h>
 #    include <zephyr/version.h>
@@ -129,11 +129,13 @@ static sentry_reset_reason_t map_reset_reason(uint32_t cause)
      * - USB, JTAG and SDIO resets map to no bit at all on ESP32 (hwinfo_esp32.c returns 0
      *   for them), so they report as `unknown`.
      *
-     * And one milestone-1 gap: a Zephyr fatal error with CONFIG_RESET_ON_FATAL_ERROR reboots
-     * through esp_restart(), which the hardware records as a software reset. ESP-IDF tells
-     * a panic apart with a hint its panic handler writes before restarting, and Zephyr does
-     * not build that handler, so a panic currently reads as `software` here. Setting the
-     * hint is the job of the fatal-error hook in sentry_coredump_zephyr.c, next milestone.
+     * A Zephyr fatal error with CONFIG_RESET_ON_FATAL_ERROR reboots through esp_restart(),
+     * which the hardware records as a software reset. ESP-IDF tells a panic apart with a hint
+     * its panic handler writes before restarting; Zephyr does not build that handler, so the
+     * fatal-error hook in sentry_coredump_zephyr.c writes the hint instead. The HAL turns it
+     * into ESP_RST_PANIC and hwinfo into RESET_CPU_LOCKUP, which is why that bit means a
+     * panic here. Without the hook (CONFIG_SENTRY_MICRO_FATAL_HANDLER=n and an application
+     * handler that does not call sentry_zephyr_record_fatal()), a panic reads as `software`.
      */
     if (cause & RESET_CPU_LOCKUP) {
         return SENTRY_RESET_PANIC;
@@ -321,31 +323,11 @@ uint64_t sentry_device_unix_time_us(void)
 }
 
 /*
- * Memory that survives a reset.
- *
- * On Espressif SoCs with RTC slow memory this is the same memory the ESP32 port uses: the
- * Zephyr linker scripts collect `.rtc_noinit*` into RTC slow memory as NOLOAD, and neither
- * Zephyr's startup nor the HAL's clears it, so it is lost on power-on and kept across a
- * software reset or a panic — exactly the lifetime wanted.
- *
- * The guard is the one esp_attr.h puts around RTC_NOINIT_ATTR. hal_espressif sources each
- * series' soc_caps into Kconfig, so it is an ordinary CONFIG_ symbol here; the attribute is
- * spelled out rather than taken from esp_attr.h to keep this file off the hal's headers for
- * something this small.
- *
- * Everywhere else it is Zephyr's `__noinit`: ordinary SRAM that startup does not zero. That
- * is best effort. A warm reset usually leaves SRAM as it was, but nothing promises it, and
- * a part that powers its SRAM down in reset hands back garbage — which the magic, layout id
- * and length checks below reject, so the worst case is the no-previous-boot answer rather
- * than a wrong one.
+ * Memory that survives a reset: RTC slow memory on Espressif, `__noinit` SRAM elsewhere. The
+ * reasoning, and the one definition all three blocks share, is in sentry_persist_zephyr.h.
  */
-#    if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) && defined(CONFIG_SOC_RTC_SLOW_MEM_SUPPORTED)
-#        define SENTRY_PERSIST_TRACE __attribute__((section(".rtc_noinit.sentry_trace")))
-#        define SENTRY_PERSIST_BLOCK __attribute__((section(".rtc_noinit.sentry_block")))
-#    else
-#        define SENTRY_PERSIST_TRACE __noinit
-#        define SENTRY_PERSIST_BLOCK __noinit
-#    endif
+#    define SENTRY_PERSIST_TRACE SENTRY_PERSIST("sentry_trace")
+#    define SENTRY_PERSIST_BLOCK SENTRY_PERSIST("sentry_block")
 
 /*
  * The magic word is what distinguishes "we stored this" from whatever was in that memory at

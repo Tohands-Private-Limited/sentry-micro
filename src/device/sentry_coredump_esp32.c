@@ -48,46 +48,7 @@
 
 #if SENTRY_COREDUMP_SUPPORTED && SENTRY_COREDUMP_ARCH_RISCV
 
-/**
- * Translate a RISC-V `mcause` into the name the panic handler prints.
- *
- * Only the exception codes; an interrupt sets the high bit of `mcause` and never reaches a
- * core dump. These are the strings ESP-IDF puts on the console, for the same reason as the
- * Xtensa table below — the issue title should match what the developer already searched for.
- */
-static const char *exception_name(uint32_t mcause)
-{
-    switch (mcause) {
-    case 0:
-        return "InstructionAddressMisaligned";
-    case 1:
-        return "InstructionAccessFault";
-    case 2:
-        return "IllegalInstruction";
-    case 3:
-        return "Breakpoint";
-    case 4:
-        return "LoadAddressMisaligned";
-    case 5:
-        return "LoadAccessFault";
-    case 6:
-        return "StoreAddressMisaligned";
-    case 7:
-        return "StoreAccessFault";
-    case 8:
-    case 9:
-    case 11:
-        return "EnvironmentCall";
-    case 12:
-        return "InstructionPageFault";
-    case 13:
-        return "LoadPageFault";
-    case 15:
-        return "StorePageFault";
-    default:
-        return "";
-    }
-}
+/* The names come from core/sentry_coredump.c, shared with the Zephyr port. */
 
 /** `mtval` holds the faulting address for the fault classes that have one. */
 static bool cause_has_address(uint32_t mcause)
@@ -111,7 +72,7 @@ static bool cause_has_address(uint32_t mcause)
 static void fill_arch_details(sentry_coredump_t *out, const esp_core_dump_summary_t *summary)
 {
     snprintf(out->exception_type, sizeof(out->exception_type), "%s",
-        exception_name(summary->ex_info.mcause));
+        sentry_riscv_mcause_name(summary->ex_info.mcause));
     out->exception_addr = summary->ex_info.mtval;
     out->exception_addr_valid = cause_has_address(summary->ex_info.mcause);
 
@@ -136,87 +97,18 @@ static void fill_arch_details(sentry_coredump_t *out, const esp_core_dump_summar
 
 #elif SENTRY_COREDUMP_SUPPORTED
 
-/**
- * Translate an Xtensa EXCCAUSE into the name the panic handler prints.
- *
- * These are the strings a maker has already seen on their serial console next to "Guru
- * Meditation Error", so using the same vocabulary means the Sentry issue title matches what
- * they searched the forums for. A raw cause number would not.
- */
-static const char *exception_name(uint32_t cause)
-{
-    switch (cause) {
-    case 0:
-        return "IllegalInstruction";
-    case 1:
-        return "Syscall";
-    case 2:
-        return "InstructionFetchError";
-    case 3:
-        return "LoadStoreError";
-    case 4:
-        return "Level1Interrupt";
-    case 5:
-        return "Alloca";
-    case 6:
-        return "IntegerDivideByZero";
-    case 8:
-        return "Privileged";
-    case 9:
-        return "LoadStoreAlignment";
-    case 12:
-        return "InstrPIFDataError";
-    case 13:
-        return "LoadStorePIFDataError";
-    case 14:
-        return "InstrPIFAddrError";
-    case 15:
-        return "LoadStorePIFAddrError";
-    case 16:
-        return "InstTLBMiss";
-    case 17:
-        return "InstTLBMultiHit";
-    case 18:
-        return "InstFetchPrivilege";
-    case 20:
-        return "InstFetchProhibited";
-    case 24:
-        return "LoadStoreTLBMiss";
-    case 25:
-        return "LoadStoreTLBMultiHit";
-    case 26:
-        return "LoadStorePrivilege";
-    case 28:
-        return "LoadProhibited";
-    case 29:
-        return "StoreProhibited";
-    default:
-        return "";
-    }
-}
+/* The names and the data-address rule come from core/sentry_coredump.c, shared with the
+ * Zephyr port. */
 
 static void fill_arch_details(sentry_coredump_t *out, const esp_core_dump_summary_t *summary)
 {
     snprintf(out->exception_type, sizeof(out->exception_type), "%s",
-        exception_name(summary->ex_info.exc_cause));
+        sentry_xtensa_exccause_name(summary->ex_info.exc_cause));
     out->exception_addr = summary->ex_info.exc_vaddr;
     /* `exc_vaddr` only holds a faulting data address for load/store exceptions; for the
      * rest it is stale. Reporting it regardless would attach a confident-looking address to
      * an IllegalInstruction that has nothing to do with it. */
-    switch (summary->ex_info.exc_cause) {
-    case 3: /* LoadStoreError */
-    case 9: /* LoadStoreAlignment */
-    case 24: /* LoadStoreTLBMiss */
-    case 25: /* LoadStoreTLBMultiHit */
-    case 26: /* LoadStorePrivilege */
-    case 28: /* LoadProhibited */
-    case 29: /* StoreProhibited */
-        out->exception_addr_valid = true;
-        break;
-    default:
-        out->exception_addr_valid = false;
-        break;
-    }
+    out->exception_addr_valid = sentry_xtensa_exccause_has_data_addr(summary->ex_info.exc_cause);
 
     uint32_t depth = summary->exc_bt_info.depth;
     if (depth > SENTRY_MICRO_MAX_FRAMES) {

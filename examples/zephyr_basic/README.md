@@ -1,12 +1,14 @@
 # zephyr_basic
 
-The Zephyr counterpart of `wifi_basic`'s boot path: initialise sentry-micro, print what it
-learned about this boot, and report the boot as one event — delivered through
-`scripts/serial_relay.py` on the laptop the board is plugged into. No WiFi.
+The Zephyr counterpart of `wifi_basic`'s boot and crash paths: initialise sentry-micro, print
+what it learned about this boot, and report either the crash the previous boot died of, with
+its backtrace, or else the boot as one event — delivered through `scripts/serial_relay.py` on
+the laptop the board is plugged into. No WiFi.
 
 Target: `esp32s3_devkitc/esp32s3/procpu`. Other boards should build (the device layer falls
-back to Zephyr's generic APIs off Espressif), but only this one has been compiled. It builds
-and links; the flash and relay steps below have not yet been run on a board.
+back to Zephyr's generic APIs off Espressif), but only this one has been compiled. Both the
+boot event and the crash path have been run on an ESP32-S3 (a WROOM-1 N16R8 module with only
+the chip's native USB, see below), and both reached Sentry.
 
 ## Build
 
@@ -38,7 +40,9 @@ west build -p always -b esp32s3_devkitc/esp32s3/procpu -d build .
 changing the DSN or release rebuild with `-p always`.
 
 Add `-- -DSENTRY_DEMO_CRASH=1` to the build command to crash deliberately once the boot event
-is out — see the known gaps below for what that reports today.
+is out. sentry-micro's fatal-error handler records the crash in RTC memory and marks the reboot
+as a panic; the next boot reports it with its backtrace, reads `reset reason: panic`, and does
+not crash again, so one power-on gives one crash-and-report cycle.
 
 No sysbuild and no MCUboot: Espressif boards without sysbuild boot the application directly
 (`ESP_SIMPLE_BOOT`), so a plain `west build` produces a flashable image.
@@ -97,12 +101,12 @@ the `@SENTRY-RELAY-RESULT/1` answer.
 
 ## Known gaps in this milestone
 
-- **No crash backtrace.** `sentry_coredump_is_supported()` is false on Zephyr; a crash is
-  reported as a reset reason only. The plan is in `src/device/zephyr/sentry_coredump_zephyr.c`.
-- **A panic reads as a `software` reset.** `CONFIG_RESET_ON_FATAL_ERROR` reboots through
-  `esp_restart()`, and the ESP-IDF panic hint that would mark it as a panic is never written,
-  because Zephyr does not build ESP-IDF's panic handler. With `SENTRY_DEMO_CRASH=1` this means
-  the "do not crash twice" guard never trips, and the demo crashes on every boot.
+- **Frames are hex.** Zephyr links with `--build-id=none` and there is no release flow that
+  uploads its ELF, so Sentry cannot symbolicate them yet. Compare them against the backtrace
+  Zephyr prints on the console, or resolve them with `addr2line` against `build/zephyr/zephyr.elf`.
+- **sentry-micro owns `k_sys_fatal_error_handler()`.** An application with its own handler
+  sets `CONFIG_SENTRY_MICRO_FATAL_HANDLER=n` and calls `sentry_zephyr_record_fatal()` from it
+  (`src/device/zephyr/sentry_coredump_zephyr.h`).
 - **No offline storage.** An event that cannot be delivered is dropped, not buffered.
 - **No WiFi.** The serial relay is the only transport.
 - **The wall clock is never set.** Events go out with no timestamp and ingest uses its receive

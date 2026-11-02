@@ -188,8 +188,9 @@ Written and tested, never actually run on hardware — check before trusting:
 - **The whole RISC-V core dump reader.** Compiles, matches the ESP-IDF struct, never executed.
   This is the big one: no C3 or C6 has ever run this code. If you have one of those boards,
   start here (SDK-1388).
-- **Every board except the classic ESP32.** The S2, S3, C3 and C6 are covered by compilation
-  only. All five variants build; only `esp32dev` has been flashed.
+- **Every Arduino board except the classic ESP32.** The S2, S3, C3 and C6 Arduino variants are
+  covered by compilation only. All five build; only `esp32dev` has been flashed. (The S3 has
+  been flashed under Zephyr, which is a different build and a different transport.)
 - **TLS certificate verification.** `WiFiTransport` runs with verification off unless you call
   `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
 - **The Action's upload path.** CI exercises it on every PR in build-only mode — fixpoint
@@ -197,6 +198,15 @@ Written and tested, never actually run on hardware — check before trusting:
   yet uploaded to Sentry from CI, because the repository has no `SENTRY_AUTH_TOKEN` secret.
   The upload command itself is the one `release.sh` has always used from a laptop, plus
   `--wait --id --require-all`. Add the secret and push a tag to close the gap.
+
+Verified on hardware (ESP32-S3 WROOM-1 N16R8 under Zephyr, over the serial relay on the
+chip's native USB):
+
+- **The boot event delivers**, as `sentry.micro.zephyr` with `os.name` `zephyr`.
+- **Crash -> reboot -> report.** A null store three calls deep is recorded by the fatal-error
+  hook into RTC slow memory, the reboot reads `panic`, and the next boot reports it with the
+  six frames Zephyr printed on the console, which `addr2line` resolves to the three demo
+  functions, `main`, and the kernel's two entry frames. Not symbolicated in Sentry yet.
 
 Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
 
