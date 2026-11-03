@@ -20,7 +20,7 @@
 #include <time.h>
 #include <WiFi.h>
 
-#include <device/sentry_storage_nvs.h>
+#include <platform/esp-idf/sentry_storage_nvs.h>
 #include <sentry_micro.h>
 #include <transport/sentry_transport_auto.hpp>
 #include <transport/sentry_transport_serial.hpp>

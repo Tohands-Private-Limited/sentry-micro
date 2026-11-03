@@ -63,8 +63,8 @@
 
 #include <core/sentry_base64.h>
 #include <core/sentry_relay.h>
-#include <device/sentry_coredump_device.h>
-#include <device/sentry_storage_nvs.h>
+#include <platform/esp-idf/sentry_storage_nvs.h>
+#include <platform/sentry_coredump_device.h>
 #include <sentry_micro.h>
 #include <transport/sentry_transport_relay.hpp>
 

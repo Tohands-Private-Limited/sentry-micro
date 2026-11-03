@@ -1,21 +1,25 @@
 /*
- * The few things the Zephyr platform files need from the silicon rather than from the OS.
+ * The few things the platform files need from the silicon rather than from the OS.
  * Private to the SDK: the platform files in src/platform/ include it, applications do not.
  *
- * Zephyr already hides the OS differences between SoCs (hwinfo, the clock, the heap). What is
- * left is what no Zephyr API covers on every part, and it is exactly this: where a block of
- * memory survives a reset, how to mark a reboot as a panic, which chip this is, and which
- * revision of it. Each SoC family implements the three functions in
- * src/device/<family>/sentry_soc_<family>.c, and zephyr/CMakeLists.txt compiles exactly one.
- * There are no weak fallbacks on purpose: a family that forgot sentry_soc_mark_panic() must
- * fail to link, not quietly build a port whose crashes read back as plain software resets.
+ * Under Zephyr the hooks are all there is to the silicon. Zephyr already hides the OS differences
+ * between SoCs (hwinfo, the clock, the heap). What is left is what no Zephyr API covers on every
+ * part, and it is exactly this: where a block of memory survives a reset, how to mark a reboot as a
+ * panic, which chip this is, and which revision of it. Each SoC family implements the three
+ * functions in src/device/<family>/sentry_soc_<family>.c, and zephyr/CMakeLists.txt compiles
+ * exactly one. There are no weak fallbacks on purpose: a family that forgot sentry_soc_mark_panic()
+ * must fail to link, not quietly build a port whose crashes read back as plain software resets.
+ *
+ * ESP-IDF, which the Arduino core is built on, answers the same questions through the same
+ * hooks, from the same Espressif file, so the chip model and revision have one definition for
+ * every platform and cannot drift between them. The Zephyr-only parts are marked below.
  */
 #ifndef SENTRY_MICRO_SOC_H_INCLUDED
 #define SENTRY_MICRO_SOC_H_INCLUDED
 
-#if defined(__ZEPHYR__)
+#include <stdint.h>
 
-#    include <stdint.h>
+#if defined(__ZEPHYR__)
 
 #    include <zephyr/linker/section_tags.h>
 
@@ -52,9 +56,18 @@
 #        define SENTRY_PERSIST(name) __noinit
 #    endif
 
-#    ifdef __cplusplus
+/*
+ * SENTRY_PERSIST is Zephyr-only on purpose. sentry_device_esp32.c keeps esp_attr.h's
+ * RTC_NOINIT_ATTR, which names the section `.rtc_noinit` and is empty on a part without RTC
+ * slow memory; SENTRY_PERSIST would rename it to `.rtc_noinit.<name>`. That moves where the
+ * classic ESP32 keeps its trace and block across a reset, which a build cannot confirm and
+ * this repository has no way to run, so the ESP-IDF attributes are left alone.
+ */
+#endif /* __ZEPHYR__ */
+
+#ifdef __cplusplus
 extern "C" {
-#    endif
+#endif
 
 /**
  * Marks the coming reboot as a panic, so the next boot can tell it from a software reset.
@@ -80,10 +93,8 @@ const char *sentry_soc_chip_model(void);
  */
 uint16_t sentry_soc_chip_revision(void);
 
-#    ifdef __cplusplus
+#ifdef __cplusplus
 }
-#    endif
-
-#endif /* __ZEPHYR__ */
+#endif
 
 #endif /* SENTRY_MICRO_SOC_H_INCLUDED */

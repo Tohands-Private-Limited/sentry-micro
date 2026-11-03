@@ -4,6 +4,13 @@
 
 ### Various fixes & improvements
 
+- The ESP-IDF and Arduino sources moved under `src/platform/`, beside the Zephyr port, and the
+  chip model and revision now come from `device/espressif/` on ESP-IDF too. Include paths
+  changed for downstream code that copied these headers: `device/sentry_device.h` is now
+  `platform/sentry_device.h`, `device/sentry_coredump_device.h` is now
+  `platform/sentry_coredump_device.h`, and `device/sentry_storage_nvs.h` is now
+  `platform/esp-idf/sentry_storage_nvs.h`; `device/sentry_storage_fs.hpp` is now
+  `platform/arduino/sentry_storage_fs.hpp`.
 - Initial project scaffold: portable core, ESP32 device context, transport interface.
 - DSN parsing with ingest-URL and `X-Sentry-Auth` construction, covered by host unit tests.
 - Org id recovered from an `o<digits>.` DSN host, with an `Options::org_id` override for
