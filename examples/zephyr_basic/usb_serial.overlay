@@ -1,0 +1,24 @@
+/*
+ * Console on the ESP32-S3's native USB-Serial-JTAG instead of uart0.
+ *
+ * For boards whose only USB connector is the chip's own, with no external USB-to-UART bridge
+ * on uart0; the relay then runs on the same port the firmware is flashed through. Select it
+ * at build time:
+ *
+ *     west build ... -- -DEXTRA_DTC_OVERLAY_FILE=usb_serial.overlay
+ *
+ * Note that the chip re-enumerates on every reset, so the host loses and regains the device
+ * node around each one: scripts/serial_relay.py waits for the port to come back, and main.c
+ * holds the boot event until the host has had time to reopen it.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};

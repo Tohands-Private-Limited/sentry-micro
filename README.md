@@ -93,16 +93,20 @@ src/                        the library
     sentry_device_esp32.c   chip info, reset reason, entropy, clock
     sentry_storage_nvs.c    buffer storage in NVS
     sentry_storage_fs.cpp   buffer storage on LittleFS/SPIFFS/SD
+    zephyr/                 the same contracts on Zephyr: hwinfo, k_heap, RTC noinit
   transport/
     sentry_transport.hpp        C++ base class over the C interface
     sentry_transport_wifi.*     HTTPS straight to ingest
     sentry_transport_serial.*   relay through a USB host
     sentry_transport_auto.hpp   picks a route per delivery attempt, from a list of others
+    zephyr/                     the serial relay in C, over a Zephyr UART
+zephyr/                     Zephyr module glue: module.yml, CMake, Kconfig
 test/                       host unit tests (Unity), run with `pio test`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
   wled_browser_relay/       WLED usermod — crash reports relayed through WLED's own web UI
   wled_http_forwarder/      WLED usermod — plain HTTP to a forwarder you run yourself
+  zephyr_basic/             Zephyr application — boot event over the serial relay
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
 .github/actions/            the same chain as a reusable GitHub Action
 partitions/                 reference partition tables (with a `coredump` partition)
@@ -1047,6 +1051,24 @@ pulls a separate community platform and a separate toolchain.
 
 Not supported: **ESP32-H2** (802.15.4/BLE only — no WiFi) and **ESP8266** (different core, no
 ESP-IDF coredump; it needs its own crash-capture path, tracked as a later extension).
+
+### Zephyr
+
+The same SDK builds as a Zephyr module for `esp32s3_devkitc/esp32s3/procpu` against Zephyr
+4.5: compiled and linked, not yet run on hardware. This first milestone covers
+`sentry_init()`, the device context (chip, factory device id, reset reason from `hwinfo`,
+k_malloc heap, Zephyr version), the trace and log-ring blocks kept in RTC slow memory across a
+reset, and `sentry_capture_message()` delivered through `scripts/serial_relay.py` by a C
+serial transport speaking the same `@SENTRY-RELAY/1` protocol. Events report `sdk.name` as
+`sentry.micro.zephyr`.
+
+Not yet: crash backtraces (a panic reports as a `software` reset for now), WiFi, and offline
+storage. The sample lists every gap.
+
+To use it, add this repository to `ZEPHYR_EXTRA_MODULES` (or your west manifest), set
+`CONFIG_SENTRY_MICRO=y`, include `<sentry_micro.h>` and register the transport from
+`<transport/zephyr/sentry_transport_serial.h>`. [`examples/zephyr_basic`](examples/zephyr_basic)
+is a complete application with the exact build, flash and relay commands.
 
 ### Partition table
 

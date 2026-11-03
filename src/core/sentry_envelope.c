@@ -196,7 +196,7 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_key(writer, "os");
         sentry_json_object_begin(writer);
         sentry_json_kv_string(writer, "type", "os");
-        sentry_json_kv_string(writer, "name", "esp-idf");
+        sentry_json_kv_string(writer, "name", SENTRY_MICRO_OS_NAME);
         sentry_json_kv_string_opt(writer, "version", device->sdk_version);
         sentry_json_object_end(writer);
     }

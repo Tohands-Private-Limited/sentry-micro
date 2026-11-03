@@ -411,3 +411,9 @@
   shared or default attributes across a container, precisely because one container may mix
   metrics from different traces. Recorded so the next person to notice those bytes does not
   have to re-investigate.
+- Zephyr support, first milestone: a Zephyr module (`zephyr/`) with a device layer, a C serial
+  relay transport and `examples/zephyr_basic`, delivering the boot event from an ESP32-S3
+  through `scripts/serial_relay.py`, as `sdk.name` `sentry.micro.zephyr` with `os.name`
+  `zephyr`. No crash backtraces, WiFi or offline storage yet. Verified on an ESP32-S3 (N16R8)
+  whose only USB is the chip's own: `usb_serial.overlay` puts the console on the
+  USB-Serial-JTAG, and the relay now reopens the port after the chip re-enumerates on reset.
