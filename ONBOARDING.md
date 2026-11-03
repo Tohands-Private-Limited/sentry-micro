@@ -137,7 +137,12 @@ to walk without DWARF.
 **Build all five variants before claiming anything works.** Both of the above were shipped
 broken because only the four default envs were built. `pio run` covers four;
 `pio run -e esp32-c6` is the fifth and is not in `default_envs` because it pulls a separate
-toolchain.
+toolchain. Run it as its own command, and if the first run right after the four default envs
+dies with `TypeError: argument should be a str or an os.PathLike object ... not 'NoneType'`
+from `builder/frameworks/arduino.py`, run it again: the two platforms publish
+`framework-arduinoespressif32` under the same package name in different versions, and the
+first C6 run after an espressif32 build sees the package missing while it reinstalls its own.
+The second run has it. CI never hits this because every variant builds in its own job.
 
 **A scan that is too thorough always fails.** Arduino's `scanNetworks()` waits a hard-coded
 10s and returns `-2` if the scan has not finished, whatever dwell you asked it for. An active
@@ -157,6 +162,14 @@ class of bug above.
 and 460800 die with "Unable to verify flash chip connection" immediately after esptool reports
 "Changed"; 115200 works. Hence `upload_speed = 115200` on `esp32dev`.
 
+**`west flash` builds first, and flashes what that build produced.** It re-runs the build in
+the given directory before every flash, and the ESP32 runner does not accept `--skip-rebuild`.
+A test image made from temporarily patched sources is therefore replaced by a rebuild of
+whatever the sources say at flash time. Found the hard way: a "wrong CA" image appeared to pass
+TLS verification for an hour, because the sources had been restored before `west flash` ran
+and the board kept getting the normal image. Flash a one-off image with esptool directly
+instead: `esptool --chip esp32s3 --port /dev/ttyACM0 --after hard-reset write-flash 0x0 image.bin`.
+
 ## Working on it
 
 ```bash
@@ -173,11 +186,14 @@ for free. Anything that touches ESP-IDF goes in `device/`; anything that touches
 in `device/zephyr/` or `transport/zephyr/`, wrapped whole in `#if defined(__ZEPHYR__)`,
 because PlatformIO compiles every file under `src/` for the Arduino builds too.
 
-There is a sixth build to keep green when you touch `core/` or the Zephyr files:
+There are two more builds to keep green when you touch `core/` or the Zephyr files:
 [`examples/zephyr_basic`](examples/zephyr_basic/README.md) for `esp32s3_devkitc`, built
-with `west` from a Zephyr workspace. That README has the exact commands, including how to
-keep `west` and PlatformIO in a `.venv/` inside this repository rather than in your home
-directory.
+with `west` from a Zephyr workspace, once as it is (the serial relay) and once with
+`-DEXTRA_CONF_FILE=wifi.conf` and `SENTRY_MICRO_WIFI_SSID` set (the WiFi transport, which only
+compiles with the network stack that fragment adds). That README has the exact commands,
+including how to keep `west` and PlatformIO in a `.venv/` inside this repository rather than in
+your home directory. The WiFi build also needs every hal_espressif blob, not just the S3's:
+Zephyr's WiFi driver checks the whole set at configure time (`west blobs fetch hal_espressif`).
 
 CI runs the host tests, a format check, and all five variant builds on every push.
 
@@ -193,6 +209,9 @@ Written and tested, never actually run on hardware — check before trusting:
   been flashed under Zephyr, which is a different build and a different transport.)
 - **TLS certificate verification.** `WiFiTransport` runs with verification off unless you call
   `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
+- **The Zephyr WiFi transport's memory sizing.** 60 KB of mbedTLS heap and a 16 KB main
+  stack are the figures the handshake was first run with, not measured minimums; nobody has
+  yet trimmed them with the thread analyzer and heap statistics.
 - **The Action's upload path.** CI exercises it on every PR in build-only mode — fixpoint
   build, stamp, and the `sentry-cli` readback that proves the stamp landed — but no run has
   yet uploaded to Sentry from CI, because the repository has no `SENTRY_AUTH_TOKEN` secret.
@@ -200,13 +219,20 @@ Written and tested, never actually run on hardware — check before trusting:
   `--wait --id --require-all`. Add the secret and push a tag to close the gap.
 
 Verified on hardware (ESP32-S3 WROOM-1 N16R8 under Zephyr, over the serial relay on the
-chip's native USB):
+chip's native USB, and again over WiFi):
 
 - **The boot event delivers**, as `sentry.micro.zephyr` with `os.name` `zephyr`.
 - **Crash -> reboot -> report.** A null store three calls deep is recorded by the fatal-error
   hook into RTC slow memory, the reboot reads `panic`, and the next boot reports it with the
   six frames Zephyr printed on the console, which `addr2line` resolves to the three demo
   functions, `main`, and the kernel's two entry frames. Not symbolicated in Sentry yet.
+- **The WiFi transport delivers, with the certificate checked.** The board joins a 2.4 GHz
+  network, sets its clock over SNTP, and both the boot event and a recovered crash report
+  POST straight to ingest over TLS 1.2 with `TLS_PEER_VERIFY_REQUIRED` against the bundled
+  DigiCert root; ingest answered `200` to each, and the event's timestamp was the device's
+  own. WiFi and the USB-Serial-JTAG console coexisted throughout. The negative case was run
+  too: with a self-signed root passed in place of the bundled one, the handshake fails
+  (`ECONNABORTED`), the transport reports "no route", and the firmware carries on.
 
 Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
 

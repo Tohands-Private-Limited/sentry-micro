@@ -38,15 +38,16 @@ if [ "$#" -gt 0 ]; then
     files=("$@")
 else
     # Only our own sources: -prune keeps this out of .pio/, which holds the entire Arduino
-    # core and ESP-IDF once anything has been built, out of Zephyr build directories, and
-    # out of a project virtualenv, whose site-packages carry C sources of their own.
+    # core and ESP-IDF once anything has been built, out of Zephyr build directories (`build`,
+    # and variants beside it such as `build-wifi`), and out of a project virtualenv, whose
+    # site-packages carry C sources of their own.
     # (A read loop rather than `mapfile`, which needs bash 4 — macOS still ships bash 3.2.)
     files=()
     while IFS= read -r file; do
         files+=("$file")
     done < <(
         find . \
-            \( -name .git -o -name .pio -o -name build -o -name .venv \) -prune -o \
+            \( -name .git -o -name .pio -o -name build -o -name 'build-*' -o -name .venv \) -prune -o \
             \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \) -print |
             sort
     )

@@ -21,6 +21,7 @@ if(CONFIG_SENTRY_MICRO)
     ${SENTRY_MICRO_SRC}/core/sentry_device_info.c
     ${SENTRY_MICRO_SRC}/core/sentry_dsn.c
     ${SENTRY_MICRO_SRC}/core/sentry_envelope.c
+    ${SENTRY_MICRO_SRC}/core/sentry_http.c
     ${SENTRY_MICRO_SRC}/core/sentry_json.c
     ${SENTRY_MICRO_SRC}/core/sentry_log.c
     ${SENTRY_MICRO_SRC}/core/sentry_metrics.c
@@ -47,5 +48,12 @@ if(CONFIG_SENTRY_MICRO)
 
   zephyr_library_sources_ifdef(CONFIG_SENTRY_MICRO_TRANSPORT_SERIAL
     ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_transport_serial.c
+  )
+
+  # Only with the network stack the application configured; without it these do not compile,
+  # and a build with no networking must still link.
+  zephyr_library_sources_ifdef(CONFIG_SENTRY_MICRO_TRANSPORT_WIFI
+    ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_transport_wifi.c
+    ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_ca_digicert_global_root_g2.c
   )
 endif()

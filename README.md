@@ -1055,20 +1055,29 @@ ESP-IDF coredump; it needs its own crash-capture path, tracked as a later extens
 ### Zephyr
 
 The same SDK builds as a Zephyr module for `esp32s3_devkitc/esp32s3/procpu` against Zephyr
-4.5: compiled and linked, not yet run on hardware. This first milestone covers
-`sentry_init()`, the device context (chip, factory device id, reset reason from `hwinfo`,
-k_malloc heap, Zephyr version), the trace and log-ring blocks kept in RTC slow memory across a
-reset, and `sentry_capture_message()` delivered through `scripts/serial_relay.py` by a C
-serial transport speaking the same `@SENTRY-RELAY/1` protocol. Events report `sdk.name` as
+4.5. It covers `sentry_init()`, the device context (chip, factory device id, reset reason from
+`hwinfo`, k_malloc heap, Zephyr version), the trace and log-ring blocks kept in RTC slow memory
+across a reset, and `sentry_capture_message()`. Events report `sdk.name` as
 `sentry.micro.zephyr`.
 
-Not yet: crash backtraces (a panic reports as a `software` reset for now), WiFi, and offline
-storage. The sample lists every gap.
+Crashes are caught by a `k_sys_fatal_error_handler()` that records the exception, the faulting
+PC and a backtrace in RTC memory; the next boot reads `panic` and reports it with
+`sentry_event_attach_coredump()`. The frames are unsymbolicated addresses in Sentry for now.
+Both the boot event and the crash path have been run on an ESP32-S3 and reached Sentry,
+delivered through `scripts/serial_relay.py` by a C serial transport speaking the same
+`@SENTRY-RELAY/1` protocol.
+
+A C WiFi transport posts straight to ingest over Zephyr's TLS sockets, verifying the server
+against a bundled DigiCert Global Root G2, and the sample can join a network and set its clock
+over SNTP. Verified on an ESP32-S3: boot events and crash reports reach ingest over TLS with
+the certificate checked. Not yet: offline storage.
+The sample lists every gap.
 
 To use it, add this repository to `ZEPHYR_EXTRA_MODULES` (or your west manifest), set
-`CONFIG_SENTRY_MICRO=y`, include `<sentry_micro.h>` and register the transport from
-`<transport/zephyr/sentry_transport_serial.h>`. [`examples/zephyr_basic`](examples/zephyr_basic)
-is a complete application with the exact build, flash and relay commands.
+`CONFIG_SENTRY_MICRO=y`, include `<sentry_micro.h>` and register a transport from
+`<transport/zephyr/sentry_transport_serial.h>` or `<transport/zephyr/sentry_transport_wifi.h>`.
+[`examples/zephyr_basic`](examples/zephyr_basic) is a complete application with the exact
+build, flash and relay commands, and the network configuration the WiFi transport needs.
 
 ### Partition table
 

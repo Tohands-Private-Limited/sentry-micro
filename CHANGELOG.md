@@ -429,6 +429,23 @@
   six Zephyr printed on the console, resolving with `addr2line` to the demo's three crash
   functions, `main`, and the two kernel entry frames. Frames are unsymbolicated addresses in
   Sentry for now.
+- Zephyr WiFi transport, third milestone: `transport/zephyr/sentry_transport_wifi.h` posts
+  envelopes straight to ingest over Zephyr's TLS sockets, with a hand-written HTTP/1.1
+  request and no heap of its own. Same behaviour as the Arduino `WiFiTransport`: only the
+  DSN's host (or one the application names), 2xx/429/4xx/5xx mapped the same way, and
+  `Retry-After` / `X-Sentry-Rate-Limits` honoured. TLS verification is on by default against a
+  bundled DigiCert Global Root G2 (valid until 2038-01-15), which an application can replace
+  with its own; `CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY=n` turns it off with a warning. Plain
+  http is refused unless the application names the host itself. `examples/zephyr_basic`
+  joins a network, sets the clock over SNTP and uses it when built with
+  `SENTRY_MICRO_WIFI_SSID` and `-DEXTRA_CONF_FILE=wifi.conf`; the serial build is unchanged.
+  Verified on an ESP32-S3: the board joined a network, set its clock over SNTP, and delivered
+  both the boot event and a recovered crash report straight to ingest over TLS 1.2 with the
+  certificate verified against the bundled root, HTTP 200 each.
+- `Retry-After` and `X-Sentry-Rate-Limits` are parsed in `core/sentry_http.c`, shared by the
+  Arduino and Zephyr WiFi transports and covered by host tests. Same results as before,
+  including the one-day clamp. The Zephyr transport's response-head parser lives there too,
+  tested against a reply split at every byte boundary.
 - The Xtensa EXCCAUSE and RISC-V `mcause` name tables moved from the ESP32 core dump reader
   into `core/sentry_coredump.c`, shared by both ports and covered by host tests. Same strings,
   so existing issue titles are unchanged.

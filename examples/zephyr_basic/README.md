@@ -2,8 +2,9 @@
 
 The Zephyr counterpart of `wifi_basic`'s boot and crash paths: initialise sentry-micro, print
 what it learned about this boot, and report either the crash the previous boot died of, with
-its backtrace, or else the boot as one event — delivered through `scripts/serial_relay.py` on
-the laptop the board is plugged into. No WiFi.
+its backtrace, or else the boot as one event. It is delivered through `scripts/serial_relay.py`
+on the laptop the board is plugged into, or, in the [WiFi build](#wifi), straight to ingest
+over HTTPS.
 
 Target: `esp32s3_devkitc/esp32s3/procpu`. Other boards should build (the device layer falls
 back to Zephyr's generic APIs off Espressif), but only this one has been compiled. Both the
@@ -87,6 +88,78 @@ whatever the firmware prints before that, the early boot log included, is droppe
 driver. And the reset `esptool` performs after flashing arrives through the JTAG side, which
 Zephyr's hwinfo cannot name, so the first boot after a flash reports `reset reason: unknown`.
 
+## WiFi
+
+The same sample posts straight to Sentry over the ESP32-S3's own WiFi when it is built with a
+network name and the WiFi configuration fragment:
+
+```bash
+export SENTRY_MICRO_WIFI_SSID='my-network'
+export SENTRY_MICRO_WIFI_PASSWORD='my-password'   # unset for an open network
+
+west build -p always -b esp32s3_devkitc/esp32s3/procpu -d build-wifi . -- \
+    -DEXTRA_CONF_FILE=wifi.conf
+```
+
+Add `-DEXTRA_DTC_OVERLAY_FILE=usb_serial.overlay` after the `--` for a board with only the
+native USB port, as above. Then flash it and watch the console with any serial terminal; no
+relay is involved:
+
+```bash
+west flash -d build-wifi --esp-device /dev/ttyUSB0
+```
+
+On boot it joins the network (up to 30 s, until DHCP has given it an address; the first try
+right after a flash is often refused and the driver's own reconnect then gets through a few
+seconds later), sets the clock over SNTP from `pool.ntp.org` (up to three queries), and
+reports through
+`transport/zephyr/sentry_transport_wifi.h`. The console prints the SSID, the address, the
+time it set, and `transport: wifi`.
+
+**Two switches, kept apart on purpose.** The SSID in the environment selects the WiFi
+transport in `main.c`; `wifi.conf` supplies the network stack it needs. The stack lives in a
+fragment rather than in `prj.conf` because it is large and the serial build has no use for
+it: the WiFi driver reserves a 51 KB heap, mbedTLS 60 KB, and the main stack grows to 16 KB
+for the TLS handshake. The serial-relay build stays exactly as it was. Setting the SSID
+without the fragment stops the build with a message saying so; the fragment without the SSID
+builds with a warning and reports over the serial relay. The credentials are read when CMake
+configures, like the DSN: change them, rebuild with `-p always`.
+
+**What TLS checks.** The server's certificate must chain to DigiCert Global Root G2, which
+Sentry's ingest certificate is issued under, and must name the ingest host. That root is
+bundled with sentry-micro (`src/transport/zephyr/sentry_ca_digicert_global_root_g2.c`) and
+expires on 2038-01-15; a fleet that has to outlive it, or Sentry changing certificate
+authority before then, needs a root of its own passed to `sentry_wifi_transport_init()`.
+Certificate *dates* are not checked: mbedTLS checks them only with
+`CONFIG_MBEDTLS_HAVE_TIME_DATE`, which is off, and that is why verification works before SNTP
+has set the clock. `CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY=n` turns the check off; the
+connection is then encrypted but anyone on the path can pose as ingest and read the DSN key,
+and the transport warns once on its first send. The check has been exercised both ways on a
+board: the bundled root verifies ingest, and a self-signed root in its place makes the
+handshake fail with `ECONNABORTED`, reported as "no route".
+
+Two mbedTLS options in `wifi.conf` are easy to lose and fatal to miss. Server name indication
+(`CONFIG_MBEDTLS_SSL_SERVER_NAME_INDICATION`): ingest closes a TLS 1.2 handshake that does not
+name the host, before any certificate is sent. The PEM parser
+(`CONFIG_MBEDTLS_PEM_PARSE_C`): the bundled root is PEM, and without the parser every handshake
+fails on an empty trust store; the module refuses to build that combination.
+
+**SNTP.** The clock is what gives events a timestamp, and what logs and metrics wait for
+before they are sent at all. A failed sync is printed and not fatal: events then go out with
+ingest's receive time.
+
+**One core.** The ESP32 WiFi driver requires a single-core kernel (`depends on !SMP`), which
+the `procpu` target is: Zephyr runs on the first core only, and the second is unused.
+
+**Image size.** The WiFi build links at 721,876 B of flash and 258,704 B of static DRAM on
+the ESP32-S3, against 141,620 B and 50,752 B for the serial build: the WiFi driver, the IP
+stack and mbedTLS are most of the difference. It fits the 1344 KB application slot of the
+board's partition layout with room to spare.
+
+**One warning is expected.** Every WiFi build prints a CMake warning from mbedTLS that
+`CONFIG_MBEDTLS_HAVE_TIME_DATE` is off and certificate dates will not be checked. That is the
+trade described above, made on purpose so verification works before the clock is set.
+
 ## Why `CONFIG_LOG_MODE_MINIMAL`
 
 The relay request is one line on the console UART, around 450 ms on the wire for a 4 KB
@@ -107,10 +180,15 @@ the `@SENTRY-RELAY-RESULT/1` answer.
 - **sentry-micro owns `k_sys_fatal_error_handler()`.** An application with its own handler
   sets `CONFIG_SENTRY_MICRO_FATAL_HANDLER=n` and calls `sentry_zephyr_record_fatal()` from it
   (`src/device/zephyr/sentry_coredump_zephyr.h`).
-- **No offline storage.** An event that cannot be delivered is dropped, not buffered.
-- **No WiFi.** The serial relay is the only transport.
-- **The wall clock is never set.** Events go out with no timestamp and ingest uses its receive
-  time. Logs and metrics need a timestamp, so they are held by design and never sent.
+- **No offline storage.** An event that cannot be delivered is dropped, not buffered. Over
+  WiFi that includes the boot event of a board whose network was not up in time; a recovered
+  crash is kept in RTC memory and tried again on the next boot.
+- **The WiFi build's memory sizes are generous, not measured.** 60 KB of mbedTLS heap and a
+  16 KB main stack carried the handshake on the first run; what they could be trimmed to has
+  not been measured.
+- **The serial build never sets the wall clock.** Its events go out with no timestamp and
+  ingest uses its receive time. Logs and metrics need a timestamp, so there they are held by
+  design and never sent. The WiFi build sets the clock over SNTP.
 - **Heap numbers are the `k_malloc()` pool**, not the libc `malloc()` arena — 4 KB on this
   board unless `CONFIG_HEAP_MEM_POOL_SIZE` is raised.
 - **The flash size is the board definition's, not the chip's.** `esp32s3_devkitc` declares
