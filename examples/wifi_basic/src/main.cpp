@@ -592,6 +592,13 @@ void setup()
      * later demo crash — has nothing to do with this WiFi connection. Leaving it active
      * would weld those unrelated events to it instead of leaving them untraced. */
     sentry::trace_release();
+    /* Session updates wait for the date, and loop()'s first flush is thirty seconds away.
+     * Flushing now sends the last boot's close and this boot's start the moment they can
+     * go; 0 leaves the offline buffer to loop(). After the trace is released, so the
+     * metrics this also sends are not tied to the WiFi connection. */
+    if (time_synced) {
+        sentry_flush(0);
+    }
 
     /* A recovered crash is the more interesting event, and reporting both on the same boot
      * would double up. */
@@ -644,6 +651,10 @@ void loop()
         && millis() - last_time_sync_attempt >= 30000) {
         last_time_sync_attempt = millis();
         time_synced = sync_time();
+        if (time_synced) {
+            /* As in setup(): the session updates have been waiting for exactly this. */
+            sentry_flush(0);
+        }
     }
 
     /* Once a minute, show that the device is alive and what its resources look like —

@@ -4,6 +4,55 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Whether anything lives in memory that survives a reset. */
+#define SENTRY_MICRO_RETAINED (SENTRY_MICRO_LOGS_ENABLED || SENTRY_MICRO_SESSIONS_ENABLED)
+
+#if SENTRY_MICRO_RETAINED
+/**
+ * Everything the SDK keeps across a reset, in the one block the device layer can lend.
+ *
+ * One block rather than one per feature because the device contract is one block: on ESP32
+ * it is a fixed region of RTC slow memory, and two claims on it would have to agree on who
+ * owns which bytes. A struct makes the compiler do that. Either member is absent when its
+ * feature is built out, and the layout id below changes with it, so a block written by a
+ * build with a different set is refused rather than misread.
+ */
+typedef struct {
+#    if SENTRY_MICRO_LOGS_ENABLED
+    sentry_log_ring_t log_ring;
+#    endif
+#    if SENTRY_MICRO_SESSIONS_ENABLED
+    sentry_session_record_t sessions;
+#    endif
+} sentry_retained_t;
+
+/** The block's layout: both members' own ids, and the size of the whole. */
+static uint32_t retained_layout_id(void)
+{
+    const uint32_t parts[] = {
+#    if SENTRY_MICRO_LOGS_ENABLED
+        sentry_log_ring_layout_id(),
+#    else
+        0,
+#    endif
+#    if SENTRY_MICRO_SESSIONS_ENABLED
+        sentry_session_layout_id(),
+#    else
+        0,
+#    endif
+        (uint32_t)sizeof(sentry_retained_t),
+    };
+    uint32_t id = 2166136261u;
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        for (size_t b = 0; b < 4; b++) {
+            id ^= (parts[i] >> (b * 8)) & 0xffu;
+            id *= 16777619u;
+        }
+    }
+    return id;
+}
+#endif /* SENTRY_MICRO_RETAINED */
+
 /*
  * One statically-allocated instance of SDK state.
  *
@@ -77,6 +126,27 @@ typedef struct {
      * once escaped.
      */
     uint32_t logs_truncated;
+    /**
+     * Lines recovered from a boot that crashed are being held for its crash report.
+     *
+     * Set at init when the ring came back holding lines from the previous boot and a crash
+     * record is waiting; while it is, flush_logs() sends only this boot's lines. Cleared once
+     * the crash record is gone — see flush_logs() for what happens to the held lines then.
+     */
+    bool crumbs_reserved;
+    /** A crash event has pointed at the ring this boot, so the held lines went out with it. */
+    bool crumbs_attached;
+#endif
+
+#if SENTRY_MICRO_SESSIONS_ENABLED
+    /**
+     * This boot's session and the last boot's close, in the retained block beside the log
+     * ring. NULL when sessions are off this boot: no release configured, or no block.
+     */
+    sentry_session_record_t *sessions;
+    /** Whether "holding sessions" has been said this boot; a flush every few seconds would
+     * otherwise repeat it for as long as the device has no clock. */
+    bool sessions_hold_logged;
 #endif
 
     /**
@@ -92,6 +162,15 @@ typedef struct {
 } sentry_state_t;
 
 static sentry_state_t g_state;
+
+#if SENTRY_MICRO_SESSIONS_ENABLED
+/*
+ * Outside g_state on purpose, so sentry_close() does not clear it. A second sentry_init() in
+ * the same boot must not open a second session: that would rotate this boot's session into
+ * `previous` and close it with this boot's reset reason, as if the boot had ended.
+ */
+static bool g_session_opened;
+#endif
 
 static sentry_logger_fn g_logger;
 
@@ -146,6 +225,66 @@ void sentry_set_logger(sentry_logger_fn logger) { g_logger = logger; }
 
 sentry_logger_fn sentry_get_logger(void) { return g_logger; }
 
+#if SENTRY_MICRO_SESSIONS_ENABLED
+/**
+ * Open this boot's session and close the last one, once per boot.
+ *
+ * Called from sentry_init() once the device facts are known, since the close is decided by
+ * this boot's reset reason. Nothing is sent here: sentry_flush() does that once the device
+ * has the date, which no session can be sent without.
+ */
+static void start_sessions(void)
+{
+    const char *release = g_state.options.release;
+    if (!g_state.sessions) {
+        return;
+    }
+    if (!release || !release[0]) {
+        /* Relay drops a session without attrs.release, so there is nothing to gain from
+         * keeping one. The record is left as it is, for a later boot that has a release. */
+        debug_log("sessions off: no release is configured, and Sentry needs one");
+        g_state.sessions = NULL;
+        return;
+    }
+    if (g_session_opened) {
+        return;
+    }
+    g_session_opened = true;
+
+    uint64_t now_unix_s = sentry_device_unix_time();
+    uint64_t uptime_us = sentry_device_uptime_us();
+    uint8_t sid[16];
+    bool have_sid = sentry_device_random(sid, sizeof(sid));
+    if (!have_sid) {
+        /* A session id that could collide across a fleet would merge two devices' sessions
+         * into one. The last boot can still be closed, so open() is still called. */
+        debug_log("no entropy for a session id; this boot is not counted as a session");
+    }
+    sentry_session_record_t *rec = g_state.sessions;
+    if (sentry_session_open(rec, now_unix_s, uptime_us, have_sid ? sid : NULL, release)) {
+        debug_log("an unsent session was overwritten (%u so far): three boots without a clock",
+            (unsigned)rec->dropped);
+    }
+
+    switch (sentry_session_close_previous(
+        rec, g_state.device.reset_reason, release, now_unix_s, uptime_us)) {
+    case SENTRY_SESSION_CLOSE_CRASHED:
+    case SENTRY_SESSION_CLOSE_EXITED:
+        debug_log("previous session ended %s (reset reason %s)",
+            sentry_session_status_name(rec->previous.status),
+            sentry_reset_reason_name(g_state.device.reset_reason));
+        break;
+    case SENTRY_SESSION_CLOSE_SKIPPED_RELEASE:
+        debug_log("previous session ran other firmware; left unclosed rather than reported "
+                  "under this release");
+        break;
+    case SENTRY_SESSION_CLOSE_NONE:
+    default:
+        break;
+    }
+}
+#endif /* SENTRY_MICRO_SESSIONS_ENABLED */
+
 bool sentry_init(const sentry_options_t *options)
 {
     /* Reset everything except the logger, so that a failed init can still explain itself. */
@@ -193,36 +332,52 @@ bool sentry_init(const sentry_options_t *options)
     sentry_throttle_init(
         &g_state.throttle, options->max_messages_per_minute, options->message_repeat_window_ms);
 
-#if SENTRY_MICRO_LOGS_ENABLED
+#if SENTRY_MICRO_RETAINED
     /* Claim memory that survives a reset, so the console lines leading up to a panic are
-     * still here to explain it. Whatever was recorded before the reset is still in place;
-     * begin_boot() is what marks it as belonging to a boot that is no longer running, which
-     * is the only reason those lines can still be dated correctly. */
-    bool logs_recovered = false;
-    void *ring_block = sentry_device_persistent_block(
-        sizeof(sentry_log_ring_t), sentry_log_ring_layout_id(), &logs_recovered);
-    if (ring_block) {
-        g_state.log_ring = (sentry_log_ring_t *)ring_block;
-        if (!logs_recovered) {
-            /* Either the first boot after power-on or a layout that no longer matches —
-             * the block is already zeroed, and this makes that a defined ring rather than
-             * merely a blank one. */
-            sentry_log_ring_reset(g_state.log_ring);
-        }
-    } else {
+     * still here to explain it, and the session the last boot ran is still here to close.
+     * Whatever was recorded before the reset is still in place; begin_boot() and
+     * start_sessions() are what mark it as belonging to a boot that is no longer running. */
+    bool retained_recovered = false;
+    sentry_retained_t *retained = (sentry_retained_t *)sentry_device_persistent_block(
+        sizeof(sentry_retained_t), retained_layout_id(), &retained_recovered);
+    if (!retained) {
         /* Deliberately no RAM fallback here. A port that has nowhere to put this returns a
-         * plain static block instead — the ring simply does not survive a reset there — so
-         * reaching this branch means the block could not be sized at all, which on ESP32
-         * means SENTRY_MICRO_MAX_LOGS outgrew SENTRY_RTC_BLOCK_CAP. Carrying a second
-         * whole-ring static in DRAM against that case would cost every build the RAM the
-         * move to RTC memory was meant to give back. */
-        g_state.log_ring = NULL;
-        debug_log("log ring does not fit persistent storage; logging is off this boot");
+         * plain static block instead — nothing simply survives a reset there — so reaching
+         * this branch means the block could not be sized at all, which on ESP32 means the
+         * ring and the session record together outgrew SENTRY_RTC_BLOCK_CAP. Carrying a
+         * second copy in DRAM against that case would cost every build the RAM the move to
+         * RTC memory was meant to give back. */
+        debug_log("retained state (%u bytes) does not fit persistent storage; logging and "
+                  "sessions are off this boot",
+            (unsigned)sizeof(sentry_retained_t));
+    }
+    (void)retained_recovered; /* Read only by the log ring; sessions validate themselves. */
+#endif
+
+#if SENTRY_MICRO_LOGS_ENABLED
+    g_state.log_ring = retained ? &retained->log_ring : NULL;
+    if (g_state.log_ring && !retained_recovered) {
+        /* Either the first boot after power-on or a layout that no longer matches — the
+         * block is already zeroed, and this makes that a defined ring rather than merely a
+         * blank one. */
+        sentry_log_ring_reset(g_state.log_ring);
     }
     uint8_t carried = sentry_log_ring_begin_boot(g_state.log_ring);
     if (carried > 0) {
         debug_log("recovered %u log lines from the previous boot", (unsigned)carried);
+        /* Lines from a boot that left a crash record belong to that crash's report, as its
+         * breadcrumbs, and are held back from the log stream until it has gone out. Checked
+         * once here; on ESP32 this reads and checksums the core dump partition. */
+        if (sentry_coredump_available()) {
+            g_state.crumbs_reserved = true;
+            debug_log("holding them for the crash report, as breadcrumbs");
+        }
     }
+#endif
+
+#if SENTRY_MICRO_SESSIONS_ENABLED
+    g_state.sessions = retained ? &retained->sessions : NULL;
+    start_sessions();
 #endif
 
     g_state.enabled = true;
@@ -498,20 +653,70 @@ uint32_t sentry_logs_truncated_count(void) { return g_state.logs_truncated; }
  * so mutates g_state.trace and never releases it again, which is harmless the way metrics
  * uses it but would be wrong here — the fallback below is scoped to this one envelope only.
  */
+/**
+ * Empty the ring of what a flush just dealt with: every line, or only this boot's while
+ * the crashed boot's lines are held for its report.
+ */
+static void clear_sent_logs(bool current_only)
+{
+    if (current_only) {
+        sentry_log_ring_remove(g_state.log_ring, false);
+    } else {
+        sentry_log_ring_clear(g_state.log_ring);
+    }
+}
+
 static void flush_logs(void)
 {
+    /* Read the clock first, and record it against the uptime it was read at, before any of
+     * the reasons below to stop — an empty ring included. This pairing is what a *later
+     * boot* uses to date whatever lines this boot goes on to record: after a panic their
+     * uptimes belong to a boot that no longer exists, and without an anchor from that boot
+     * there is no way back to real time. Keeping it current therefore matters most exactly
+     * when nothing can be sent — a device that is offline right up until it crashes, or one
+     * that writes its last lines moments before it does, is the case worth getting right. */
+    uint64_t now_unix_us = sentry_device_unix_time_us();
+    sentry_log_ring_set_anchor(g_state.log_ring, now_unix_us, sentry_device_uptime_us());
+
+    /*
+     * The breadcrumb rule, decided in this one place for every port: lines recovered from a
+     * boot that crashed go out once, on its crash report, and never again as logs.
+     *
+     * Held while the crash record exists, because until it is erased the report has not
+     * reached anywhere durable and the next boot will build it again. Once the record is
+     * gone the held lines are dropped if a crash event carried them this boot. If nothing
+     * did — the application erased the record without reporting it — they are released to
+     * the log stream instead, which is where they would have gone without a crash, so they
+     * are not lost for an application that does not report crashes.
+     *
+     * Also released once none are left: newer lines evicted them, and there is then no
+     * reason to keep checking the crash record, which on ESP32 means a flash read and a
+     * checksum per flush.
+     */
+    if (g_state.crumbs_reserved
+        && (sentry_log_ring_recovered_count(g_state.log_ring) == 0
+            || !sentry_coredump_available())) {
+        g_state.crumbs_reserved = false;
+        uint8_t held = sentry_log_ring_recovered_count(g_state.log_ring);
+        if (held > 0 && g_state.crumbs_attached) {
+            sentry_log_ring_remove(g_state.log_ring, true);
+            debug_log("crash reported; its %u log lines went with it as breadcrumbs", held);
+        } else if (held > 0) {
+            debug_log("crash record gone unreported; sending its %u log lines as logs", held);
+        }
+    }
+
     if (sentry_log_ring_empty(g_state.log_ring)) {
         return;
     }
-
-    /* Read the clock first, and record it against the uptime it was read at, before any of
-     * the reasons below to stop. This pairing is what a *later boot* uses to date whatever
-     * these lines turn out to be: after a panic their uptimes belong to a boot that no
-     * longer exists, and without an anchor from that boot there is no way back to real
-     * time. Keeping it current therefore matters most exactly when nothing can be sent —
-     * a device that is offline right up until it crashes is the case worth getting right. */
-    uint64_t now_unix_us = sentry_device_unix_time_us();
-    sentry_log_ring_set_anchor(g_state.log_ring, now_unix_us, sentry_device_uptime_us());
+    /* What this flush may send: everything, or only this boot's lines while the ones before
+     * the crash are held. Nothing at all when the held lines are all the ring has. */
+    bool current_only = g_state.crumbs_reserved;
+    uint8_t sendable = (uint8_t)(g_state.log_ring->count
+        - (current_only ? sentry_log_ring_recovered_count(g_state.log_ring) : 0));
+    if (sendable == 0) {
+        return;
+    }
 
     /* No route: hold the ring rather than serialising into a send that cannot happen. The
      * ring is self-bounding — oldest-out at SENTRY_MICRO_MAX_LOGS — so holding costs RAM
@@ -548,8 +753,9 @@ static void flush_logs(void)
     }
 
     char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
-    size_t needed = sentry_log_envelope_write(envelope, sizeof(envelope), g_state.log_ring,
-        fallback_trace_id, g_state.device.device_id, sentry_device_uptime_us(), now_unix_us);
+    size_t needed = (current_only ? sentry_log_envelope_write_current : sentry_log_envelope_write)(
+        envelope, sizeof(envelope), g_state.log_ring, fallback_trace_id, g_state.device.device_id,
+        sentry_device_uptime_us(), now_unix_us);
     if (needed == 0 || needed >= sizeof(envelope)) {
         /* Too large to encode, and it will be exactly as large on every later flush: what
          * pushes a ring over the budget is JSON escaping — a `"` or `\` doubles, a control
@@ -559,10 +765,10 @@ static void flush_logs(void)
          * envelope loop in sentry_flush() already makes for an entry it cannot read, and
          * these lines are counted the way an eviction counts them, because they are gone
          * for the same reason: the ring had no room to carry them any further. */
-        debug_log("dropping %u logs: need %u bytes, envelope buffer is %u",
-            (unsigned)g_state.log_ring->count, (unsigned)needed, (unsigned)sizeof(envelope));
-        count_logs_dropped(g_state.log_ring->count);
-        sentry_log_ring_clear(g_state.log_ring);
+        debug_log("dropping %u logs: need %u bytes, envelope buffer is %u", (unsigned)sendable,
+            (unsigned)needed, (unsigned)sizeof(envelope));
+        count_logs_dropped(sendable);
+        clear_sent_logs(current_only);
         return;
     }
 
@@ -579,25 +785,110 @@ static void flush_logs(void)
         (unsigned)response.http_status);
 
     if (response.result == SENTRY_SEND_OK) {
-        sentry_log_ring_clear(g_state.log_ring);
+        clear_sent_logs(current_only);
         return;
     }
     if (worth_retrying(response.result)) {
         /* Held for the next flush, which is only safe because nothing buffered it: the same
          * lines go out again as part of a larger batch, and the ring's own eviction bounds
          * how far behind it can fall. */
-        debug_log("holding %u logs for the next flush", (unsigned)g_state.log_ring->count);
+        debug_log("holding %u logs for the next flush", (unsigned)sendable);
         return;
     }
     /* Rejected: ingest understood the batch and will not take it, so holding it would retry
      * something that can never succeed — the same wedge the size check above avoids, arrived
      * at from the other direction. */
-    debug_log("dropping %u rejected logs (http %u)", (unsigned)g_state.log_ring->count,
-        (unsigned)response.http_status);
-    count_logs_dropped(g_state.log_ring->count);
-    sentry_log_ring_clear(g_state.log_ring);
+    debug_log(
+        "dropping %u rejected logs (http %u)", (unsigned)sendable, (unsigned)response.http_status);
+    count_logs_dropped(sendable);
+    clear_sent_logs(current_only);
 }
 #endif /* SENTRY_MICRO_LOGS_ENABLED */
+
+#if SENTRY_MICRO_SESSIONS_ENABLED
+/**
+ * Send one session update if it is waiting. Returns false when delivery failed in a way
+ * worth retrying, so the caller stops rather than trying the next one against the same
+ * downed link.
+ */
+static bool send_session(sentry_session_t *slot, uint64_t now_unix_s)
+{
+    if (!sentry_session_pending(slot)) {
+        return true;
+    }
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t needed = sentry_session_envelope_write(envelope, sizeof(envelope), slot,
+        g_state.device.device_id, g_state.options.release, g_state.options.environment, now_unix_s);
+    if (needed == 0) {
+        /* Not dated yet — a close whose start cannot be estimated until this boot knows its
+         * own — so there is nothing to send, and nothing wrong. */
+        return true;
+    }
+    bool init = !slot->init_sent;
+    const char *status = sentry_session_status_name(slot->status);
+    if (needed >= sizeof(envelope)) {
+        /* Only a release or environment string of well over a kilobyte gets here, and it
+         * would be as long on every later flush. */
+        debug_log("dropping a session update that needs %u bytes", (unsigned)needed);
+        sentry_session_mark_sent(slot);
+        return true;
+    }
+
+    /* deliver(), not sentry_send_envelope(), for the reason flush_logs() gives: the record
+     * already lives somewhere durable, and the offline buffer is for the crash report. */
+    sentry_response_t response = deliver((const uint8_t *)envelope, needed);
+    debug_log("session %s%s via %s: result %d, http %u", status, init ? " (init)" : "",
+        sentry_transport_name(g_state.transport), (int)response.result,
+        (unsigned)response.http_status);
+    if (response.result == SENTRY_SEND_OK) {
+        sentry_session_mark_sent(slot);
+        return true;
+    }
+    if (worth_retrying(response.result)) {
+        return false;
+    }
+    /* Rejected: holding it would retry something that can never succeed. */
+    sentry_session_mark_sent(slot);
+    return true;
+}
+
+/**
+ * Send the last boot's close and this boot's init, whichever are waiting.
+ *
+ * The close first: it is the one that can only ever be sent from here, and the one release
+ * health is missing until it arrives. Each goes in its own envelope, held rather than
+ * buffered on failure, the way metrics are: the record that produces them is already in
+ * memory that survives a reset.
+ */
+static void flush_sessions(void)
+{
+    sentry_session_record_t *rec = g_state.sessions;
+    if (!rec
+        || (!sentry_session_pending(&rec->previous) && !sentry_session_pending(&rec->current))) {
+        return;
+    }
+    if (!sentry_transport_is_available(g_state.transport)) {
+        if (!g_state.sessions_hold_logged) {
+            g_state.sessions_hold_logged = true;
+            debug_log("holding sessions: no route");
+        }
+        return;
+    }
+    /* Relay drops a session dated more than five days ago, so one dated 1970 is not sent
+     * late, it is lost. Held until the device is told the date, as logs and metrics are. */
+    uint64_t now_unix_s = sentry_device_unix_time();
+    if (now_unix_s == 0) {
+        if (!g_state.sessions_hold_logged) {
+            g_state.sessions_hold_logged = true;
+            debug_log("holding sessions: the device has not been told the date");
+        }
+        return;
+    }
+    if (send_session(&rec->previous, now_unix_s)) {
+        send_session(&rec->current, now_unix_s);
+    }
+}
+#endif /* SENTRY_MICRO_SESSIONS_ENABLED */
 
 /**
  * Send whatever has accumulated, if anything has.
@@ -800,6 +1091,14 @@ sentry_response_t sentry_capture_message(sentry_level_t level, const char *messa
         return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
     }
 
+#if SENTRY_MICRO_SESSIONS_ENABLED
+    /* Counted before the throttle: the session had the error whether or not this event is
+     * one the throttle lets through, and release health asks whether a session had any. */
+    if (level >= SENTRY_LEVEL_ERROR) {
+        sentry_session_note_error(g_state.sessions);
+    }
+#endif
+
     /* Before anything is built, not after: the point of the throttle is to make a flood
      * cheap, and formatting an event we are about to discard is most of the cost. */
     if (!sentry_throttle_allow(&g_state.throttle, level, message, sentry_device_uptime_ms())) {
@@ -869,14 +1168,27 @@ uint32_t sentry_dropped_count(void)
 
 uint32_t sentry_flush(uint32_t max_events)
 {
-    if (!g_state.enabled || in_backoff()) {
+    if (!g_state.enabled) {
         return 0;
     }
-    /* Before the buffered envelopes, and outside the buffering check: metrics and logs
-     * accumulate whether or not offline buffering was ever enabled, and a device that never
-     * buffers still wants its heap reported and its console mirrored. Either call compiles
-     * away entirely when its feature is built out — see SENTRY_MICRO_METRICS_ENABLED /
-     * SENTRY_MICRO_LOGS_ENABLED. */
+#if SENTRY_MICRO_SESSIONS_ENABLED
+    /* Before the backoff check: this only writes to the retained record, and it is what
+     * tells the next boot how long this one ran — a crash during a long backoff still
+     * deserves an accurate duration. */
+    sentry_session_touch(g_state.sessions, sentry_device_unix_time(), sentry_device_uptime_us());
+#endif
+    if (in_backoff()) {
+        return 0;
+    }
+    /* Before the buffered envelopes, and outside the buffering check: sessions, metrics and
+     * logs accumulate whether or not offline buffering was ever enabled, and a device that
+     * never buffers still wants its health counted, its heap reported and its console
+     * mirrored. Each call compiles away entirely when its feature is built out — see
+     * SENTRY_MICRO_SESSIONS_ENABLED / SENTRY_MICRO_METRICS_ENABLED / SENTRY_MICRO_LOGS_ENABLED.
+     * Passing 0 for max_events runs exactly these and nothing from the buffer. */
+#if SENTRY_MICRO_SESSIONS_ENABLED
+    flush_sessions();
+#endif
 #if SENTRY_MICRO_METRICS_ENABLED
     flush_metrics();
 #endif
@@ -943,8 +1255,25 @@ bool sentry_event_attach_coredump(sentry_event_t *event, sentry_coredump_t *stor
      * not serving anything, which is the honest answer rather than a gap. */
     event->trace = g_state.crash_trace.active ? &g_state.crash_trace : NULL;
 
-    debug_log("crash recovered: %s in %s, %u frames%s", storage->exception_type, storage->task_name,
-        (unsigned)storage->frame_count, storage->truncated ? " (truncated)" : "");
+    /*
+     * Not counted as an error on this boot's session. The crash belongs to the session that
+     * crashed, which sentry_init() already closed as `crashed` with at least one error;
+     * counting it here as well would mark the boot that *reported* it as errored, and the
+     * crash-free rate would pay for one crash twice.
+     */
+
+    unsigned crumbs = 0;
+#if SENTRY_MICRO_LOGS_ENABLED
+    /* The lines the crashed boot printed last become this event's breadcrumbs. The ring is
+     * read when the envelope is written, so this costs a pointer, not a copy. */
+    event->breadcrumbs = g_state.log_ring;
+    g_state.crumbs_attached = true;
+    crumbs = sentry_log_ring_recovered_count(g_state.log_ring);
+#endif
+
+    debug_log("crash recovered: %s in %s, %u frames%s, %u breadcrumbs", storage->exception_type,
+        storage->task_name, (unsigned)storage->frame_count,
+        storage->truncated ? " (truncated)" : "", crumbs);
     return true;
 }
 
@@ -986,5 +1315,8 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
     event->free_heap_bytes = sentry_device_free_heap();
     event->min_free_heap_bytes = sentry_device_min_free_heap();
     event->uptime_ms = sentry_device_uptime_ms();
+    /* Read together, so a breadcrumb dated against them is placed consistently. */
+    event->now_uptime_us = sentry_device_uptime_us();
+    event->now_unix_us = sentry_device_unix_time_us();
     return true;
 }

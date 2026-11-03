@@ -56,6 +56,58 @@ bool sentry_log_entry_is_recovered(const sentry_log_ring_t *ring, const sentry_l
     return ring && entry && entry->boot_seq != ring->boot_seq;
 }
 
+uint8_t sentry_log_ring_recovered_count(const sentry_log_ring_t *ring)
+{
+    if (!ring) {
+        return 0;
+    }
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < ring->count; i++) {
+        const sentry_log_entry_t *entry = &ring->entries[(ring->head + i) % SENTRY_MICRO_MAX_LOGS];
+        if (entry->used && sentry_log_entry_is_recovered(ring, entry)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+uint8_t sentry_log_ring_remove(sentry_log_ring_t *ring, bool recovered)
+{
+    if (!ring) {
+        return 0;
+    }
+    /* Compact in place, oldest first, so the survivors keep their order and stay the
+     * contiguous run from `head` that every reader assumes. The write position never passes
+     * the read position, so nothing is overwritten before it has been read — which is what
+     * lets this run without a second ring's worth of stack on a path that already carries a
+     * 2 KB envelope buffer. */
+    uint8_t kept = 0;
+    uint8_t removed = 0;
+    for (uint8_t i = 0; i < ring->count; i++) {
+        sentry_log_entry_t *entry = &ring->entries[(ring->head + i) % SENTRY_MICRO_MAX_LOGS];
+        if (entry->used && sentry_log_entry_is_recovered(ring, entry) != recovered) {
+            if (kept != i) {
+                ring->entries[(ring->head + kept) % SENTRY_MICRO_MAX_LOGS] = *entry;
+            }
+            kept++;
+        } else {
+            removed++;
+        }
+    }
+    for (uint8_t i = kept; i < ring->count; i++) {
+        memset(&ring->entries[(ring->head + i) % SENTRY_MICRO_MAX_LOGS], 0,
+            sizeof(sentry_log_entry_t));
+    }
+    ring->count = kept;
+    if (kept == 0) {
+        ring->head = 0;
+    }
+    if (!recovered) {
+        ring->dropped = 0;
+    }
+    return removed;
+}
+
 uint32_t sentry_log_ring_layout_id(void)
 {
     /* FNV-1a over everything that changes how these bytes are read back. Not a checksum of
@@ -177,9 +229,12 @@ static int log_severity_number(sentry_level_t level)
  * boot's start instant instead: still wrong, but wrong in the one direction that cannot
  * mislead — the line really did happen before this boot began.
  */
-static uint64_t entry_unix_us(const sentry_log_ring_t *ring, const sentry_log_entry_t *entry,
+uint64_t sentry_log_entry_unix_us(const sentry_log_ring_t *ring, const sentry_log_entry_t *entry,
     uint64_t now_uptime_us, uint64_t now_unix_us)
 {
+    if (!ring || !entry || now_unix_us == 0) {
+        return 0;
+    }
     if (!sentry_log_entry_is_recovered(ring, entry)) {
         uint64_t elapsed = now_uptime_us > entry->uptime_us ? now_uptime_us - entry->uptime_us : 0;
         return elapsed > now_unix_us ? now_unix_us : now_unix_us - elapsed;
@@ -207,19 +262,19 @@ static uint64_t entry_unix_us(const sentry_log_ring_t *ring, const sentry_log_en
 
 static uint8_t write_items(sentry_json_t *writer, const sentry_log_ring_t *ring,
     const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
-    uint64_t now_unix_us)
+    uint64_t now_unix_us, bool current_only)
 {
     uint8_t count = 0;
     sentry_json_key(writer, "items");
     sentry_json_array_begin(writer);
     for (uint8_t i = 0; i < ring->count; i++) {
         const sentry_log_entry_t *entry = &ring->entries[(ring->head + i) % SENTRY_MICRO_MAX_LOGS];
-        if (!entry->used) {
+        if (!entry->used || (current_only && sentry_log_entry_is_recovered(ring, entry))) {
             continue;
         }
         sentry_json_object_begin(writer);
         sentry_json_kv_micros(
-            writer, "timestamp", entry_unix_us(ring, entry, now_uptime_us, now_unix_us));
+            writer, "timestamp", sentry_log_entry_unix_us(ring, entry, now_uptime_us, now_unix_us));
         /* Recorded trace wins; an idle-recorded line falls back to the one minted for this
          * batch, the same rule flush_metrics() already applies. */
         sentry_json_kv_string(
@@ -275,9 +330,9 @@ static uint8_t write_items(sentry_json_t *writer, const sentry_log_ring_t *ring,
     return count;
 }
 
-size_t sentry_log_envelope_write(char *buf, size_t cap, const sentry_log_ring_t *ring,
+static size_t envelope_write(char *buf, size_t cap, const sentry_log_ring_t *ring,
     const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
-    uint64_t now_unix_us)
+    uint64_t now_unix_us, bool current_only)
 {
     if (buf && cap > 0) {
         buf[0] = '\0';
@@ -292,10 +347,14 @@ size_t sentry_log_envelope_write(char *buf, size_t cap, const sentry_log_ring_t 
     sentry_json_t counter;
     sentry_json_init(&counter, NULL, 0);
     sentry_json_object_begin(&counter);
-    uint8_t item_count
-        = write_items(&counter, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us);
+    uint8_t item_count = write_items(
+        &counter, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us, current_only);
     sentry_json_object_end(&counter);
     size_t payload_len = counter.len;
+    if (item_count == 0) {
+        /* Every entry was filtered out: an envelope with no items is not worth a send. */
+        return 0;
+    }
 
     char header[128];
     int header_len = snprintf(header, sizeof(header),
@@ -319,9 +378,26 @@ size_t sentry_log_envelope_write(char *buf, size_t cap, const sentry_log_ring_t 
     sentry_json_t writer;
     sentry_json_init(&writer, buf + header_len, cap - (size_t)header_len);
     sentry_json_object_begin(&writer);
-    write_items(&writer, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us);
+    write_items(
+        &writer, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us, current_only);
     sentry_json_object_end(&writer);
     buf[header_len + payload_len] = '\n';
     buf[total] = '\0';
     return total;
+}
+
+size_t sentry_log_envelope_write(char *buf, size_t cap, const sentry_log_ring_t *ring,
+    const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
+    uint64_t now_unix_us)
+{
+    return envelope_write(
+        buf, cap, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us, false);
+}
+
+size_t sentry_log_envelope_write_current(char *buf, size_t cap, const sentry_log_ring_t *ring,
+    const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
+    uint64_t now_unix_us)
+{
+    return envelope_write(
+        buf, cap, ring, fallback_trace_id, device_id, now_uptime_us, now_unix_us, true);
 }

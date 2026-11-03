@@ -413,13 +413,22 @@ int main(void)
      * real timestamp. A failed connect is not fatal: the transport then reports "no route",
      * and with no offline storage the event is dropped; a recovered crash record is kept for
      * the next boot in that case. */
+    bool time_synced = false;
     if (wifi_connect()) {
-        sync_time();
+        time_synced = sync_time();
     }
     /* NULL: trust the DigiCert root bundled with sentry-micro, which ingest chains to. */
     sentry_set_transport(sentry_wifi_transport_init(&wifi_transport, NULL, 0));
     printk("[sentry] transport: wifi, HTTPS straight to ingest (certificate check %s)\n",
         IS_ENABLED(CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY) ? "on" : "OFF");
+    /* Session updates wait for the date, and the main loop's first flush is ten seconds
+     * away; a demo crash comes sooner than that. Flushing now sends the last boot's close
+     * and this boot's start the moment they can go, ahead of the crash report. 0: nothing
+     * from an offline buffer, which this sample does not have anyway. The SDK's own log
+     * prints one "[sentry] session ..." line per update. */
+    if (time_synced) {
+        sentry_flush(0);
+    }
 #else
     /* NULL: the console UART, which is the one the relay script is attached to. */
     sentry_set_transport(sentry_serial_transport_init(&serial_transport, NULL, 0));
@@ -438,7 +447,12 @@ int main(void)
      * panic, so the boot after the demo crash reads `panic` and stops here. */
     if (!sentry_reset_reason_is_crash(sentry_get_device_info()->reset_reason)) {
         printk("\n[demo] crashing deliberately in 3s ...\n");
+        /* Recorded and never flushed, so they are still in the log ring when the board
+         * crashes. The next boot reports them as the crash event's breadcrumbs, the trail
+         * that led to it, rather than as ordinary logs. */
+        sentry_log(SENTRY_LEVEL_INFO, "demo: boot reported, crashing in 3 s");
         k_sleep(K_SECONDS(3));
+        sentry_log(SENTRY_LEVEL_WARNING, "demo: calling demo_crash_outer()");
         demo_crash_outer();
     }
 #endif

@@ -865,10 +865,27 @@ two ways: `sentry_logs_truncated_count()` since init, and a per-line `t7d` attri
 
 **The ring survives the crash it would explain.** It lives in RTC memory
 (`RTC_NOINIT_ATTR`), which a panic, a watchdog and a software reset all preserve — so the
-lines leading up to a `StoreProhibited` are still there on the next boot and go out with the
-crash report, rather than dying with the RAM that held them. Each line also kept its own
-`trace_id` from when it was recorded, so a recovered line still points at the operation it
-belonged to.
+lines leading up to a `StoreProhibited` are still there on the next boot, rather than dying
+with the RAM that held them. Each line also kept its own `trace_id` from when it was
+recorded, so a recovered line still points at the operation it belonged to.
+
+**After a crash, those lines are the crash event's breadcrumbs.** When the boot that wrote
+them left a crash record, `sentry_event_attach_coredump()` puts the lines it never got to
+send on the event as `breadcrumbs`, oldest first, each with its level and its recovered
+timestamp — the trail Sentry shows above the stack trace. They go out once, there: the log
+stream holds them back while the crash record exists (this boot's own lines keep flowing as
+logs around them), and the first `sentry_flush()` after `sentry_coredump_erase()` discards
+them. If the record is erased without ever being reported, they are sent as logs instead,
+which is where they would have gone without a crash.
+
+The crash event and its breadcrumbs share the one `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES`
+envelope, and the crash comes first. Measured on the host against the six-frame Zephyr crash
+with a build id: 1,474 B bare, 2,446 B with six 80-character lines — so the oldest give way
+until it fits (three of the six, at 2,001 B) and the event is tagged `breadcrumbs_dropped`
+with how many. Without a build id the bare event is about 270 B smaller and four fit. Short
+lines cost far less: a breadcrumb is about 80 B plus its message. The tag counts only what
+the buffer could not hold: a line logged on the reporting boot before the crash is reported
+still evicts the oldest recovered line from a full ring, as any new line does.
 
 Two things that follows from, both worth knowing:
 
@@ -901,7 +918,7 @@ as dropped and the reason is reported through `sentry_set_logger()`.
 | | |
 | --- | --- |
 | DRAM | **~0** — the ring no longer lives here. `g_state` keeps a pointer to it |
-| RTC slow memory | **1,036 B** at the defaults: an 824-byte `sentry_log_ring_t` inside a 1 KB block with a 12-byte validation header. ESP32 has 7,680 B of it (`memory.ld` reserves the first 512 for the ULP), and the persisted trace context is the only other claim on them |
+| RTC slow memory | **1,036 B** at the defaults: a 1 KB block with a 12-byte validation header, holding the 856-byte `sentry_log_ring_t` and the 104-byte session record (960 B used). ESP32 has 7,680 B of it (`memory.ld` reserves the first 512 for the ULP), and the persisted trace context is the only other claim on them |
 | Flash, always linked | ~1.5 KB — `flush_logs()` runs on every `sentry_flush()`, whether or not the firmware ever calls `sentry_log()` |
 
 Moving the ring into RTC memory **gave back 824 bytes of DRAM**: measured on `esp32dev`,
@@ -941,6 +958,51 @@ silently doing nothing.
 
 `SENTRY_MICRO_METRICS_ENABLED=0` does the same for Application Metrics (~336 B RAM at the
 current ten slots, ~1.1 KB flash on the same build).
+
+### Sessions: release health, one boot at a time
+
+Sentry's release health — crash-free sessions and users per release — counts sessions, and
+here **one boot is one session**. It opens in `sentry_init()` and is closed by the *next*
+boot, from that boot's reset reason, because a microcontroller learns how a boot ended only
+after it has ended:
+
+| Next boot's reset reason | The previous session closes as |
+| --- | --- |
+| panic, any watchdog, brownout | `crashed` (with at least one error) |
+| software, power-on, reset pin, deep-sleep wake, unknown | `exited` |
+
+Nothing extra to call. `sentry_flush()` sends the last boot's close and then this boot's
+start, each in its own small envelope (about 300 B), and holds them — not buffers them — when
+there is no route, the same as logs and metrics. `sentry_capture_message()` at `error` or
+`fatal` counts an error against the running session. A crash event does not: the crash
+belongs to the session that crashed, which is already closed `crashed`, and counting it again
+on the boot that reported it would mark that boot errored as well. The `did` (what release
+health counts as a user) is the device id.
+
+**Nothing is sent before the device knows the date.** Relay requires a `started` time on
+every session update and silently drops one more than five days old, so a session dated 1970
+is not late, it is lost. A boot that learns the date sets its own start as "now minus
+uptime"; a session that crashed before it ever learned it gets its start estimated from how
+long it ran, once the next boot has the clock. A device with no clock source at all — the
+serial-relay Zephyr build — never sends sessions. Call `sentry_flush(0)` right after setting
+the clock, as both examples do, so the boot is counted at once rather than at the next
+periodic flush.
+
+The state lives beside the log ring in the same RTC block: a 104-byte record holding this
+boot's session and the last boot's waiting close (the ring and the record together are 960 B
+of the 1,024 B block). Things that follow from that:
+
+- **A power cycle forgets the previous session**, like the log ring, so it is never closed;
+  Sentry counts a session that is never closed as healthy.
+- **A session of more than five days never gets its close counted**, because its `started`
+  is too old for Relay by the time the close is sent. Its start was counted.
+- **After an OTA, the previous session is left unclosed** rather than closed under the new
+  release, which would blame the new firmware for the old one's crash.
+- **Three boots in a row without a clock** overwrite the oldest unsent session; the count is
+  in the init debug log.
+
+`SENTRY_MICRO_SESSIONS_ENABLED=0` (or `CONFIG_SENTRY_MICRO_SESSIONS=n` on Zephyr) compiles
+them out. A release is required: with `options.release` unset, sessions are off.
 
 ## Writing a transport
 
@@ -1175,7 +1237,9 @@ Implemented today:
 Not done:
 
 
-- [ ] **Sessions / release health** — crash-free rate per release across a fleet
+- [x] **Sessions / release health** — one boot per session, closed by the next boot from its
+      reset reason, so the crash-free rate per release covers a fleet
+- [x] Breadcrumbs on the crash event — the log lines the crashed boot never sent
 - [ ] **WLED usermod** — the ready-made audience
 - [ ] Full RISC-V backtraces (needs server-side unwinding of the stack dump)
 

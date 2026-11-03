@@ -119,6 +119,23 @@ config SENTRY_MICRO_FATAL_HANDLER
 	  sentry_zephyr_record_fatal() (platform/zephyr/sentry_coredump_zephyr.h)
 	  first thing from its handler.
 
+config SENTRY_MICRO_SESSIONS
+	bool "Sessions, for release health"
+	default y
+	help
+	  Count each boot as one session in Sentry's release health. The
+	  session opens at sentry_init() and is closed by the next boot from
+	  its reset reason: a panic, a watchdog or a brownout ends it as
+	  crashed, anything else as exited. Updates are sent by
+	  sentry_flush() once the device knows the date, because Sentry
+	  drops a session that is not dated; a build with no clock source
+	  never sends them. Needs a release in sentry_options_t.
+
+	  The record is 104 bytes, kept beside the log ring in the memory
+	  that survives a reset. Logs and metrics are switched with the
+	  SENTRY_MICRO_LOGS_ENABLED and SENTRY_MICRO_METRICS_ENABLED
+	  defines rather than here.
+
 config SENTRY_MICRO_SERIAL_TIMEOUT_MS
 	int "How long to wait for the serial relay to answer, in ms"
 	default 15000

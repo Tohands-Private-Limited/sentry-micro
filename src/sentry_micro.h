@@ -38,6 +38,7 @@
 #include "core/sentry_envelope.h"
 #include "core/sentry_log.h"
 #include "core/sentry_metrics.h"
+#include "core/sentry_session.h"
 #include "core/sentry_span.h"
 #include "core/sentry_throttle.h"
 #include "core/sentry_trace.h"
@@ -546,6 +547,12 @@ sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len);
  * Also raises the event to `fatal` and sets a message describing the crash, since an event
  * carrying a backtrace is by definition not routine. Returns true when a crash was attached.
  *
+ * The log lines the crashed boot recorded and never sent become the event's breadcrumbs,
+ * oldest first; when they do not all fit the envelope buffer the oldest are left out and the
+ * event is tagged `breadcrumbs_dropped`. Those lines are held back from the log stream while
+ * the crash record exists, and are discarded by the first `sentry_flush()` after
+ * `sentry_coredump_erase()`, so they reach Sentry once, on the crash.
+ *
  * Do **not** call `sentry_coredump_erase()` until the resulting envelope has been delivered
  * or buffered: erase early and a failed send loses the crash; never erase and every boot
  * re-reports it.
@@ -573,6 +580,10 @@ uint32_t sentry_dropped_count(void);
 
 /**
  * Try to deliver up to `max_events` buffered envelopes, oldest first.
+ *
+ * Before those, sends whatever sessions, metrics and logs are waiting, buffered or not;
+ * `sentry_flush(0)` does only that. Session updates wait for the device to know the date,
+ * so calling this right after setting the clock is what gets this boot counted promptly.
  *
  * Stops at the first one that does not go through, so a downed network costs a single
  * failed attempt rather than one per queued event. Respects any backoff the server asked

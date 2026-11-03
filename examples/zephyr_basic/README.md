@@ -116,6 +116,11 @@ reports through
 `transport/zephyr/sentry_transport_wifi.h`. The console prints the SSID, the address, the
 time it set, and `transport: wifi`.
 
+Straight after that it flushes, which sends this boot's session start for release health and,
+after a reboot, the previous boot's close: `[sentry] session ok (init) via wifi: result 0,
+http 200`, and on the boot after a demo crash `[sentry] session crashed via wifi: ...` first.
+That boot's crash report then carries the demo's two log lines as breadcrumbs.
+
 **Two switches, kept apart on purpose.** The SSID in the environment selects the WiFi
 transport in `main.c`; `wifi.conf` supplies the network stack it needs. The stack lives in a
 fragment rather than in `prj.conf` because it is large and the serial build has no use for
@@ -256,8 +261,12 @@ the `@SENTRY-RELAY-RESULT/1` answer.
   16 KB main stack carried the handshake on the first run; what they could be trimmed to has
   not been measured.
 - **The serial build never sets the wall clock.** Its events go out with no timestamp and
-  ingest uses its receive time. Logs and metrics need a timestamp, so there they are held by
-  design and never sent. The WiFi build sets the clock over SNTP.
+  ingest uses its receive time. Logs, metrics and sessions need a timestamp, so there they are
+  held by design and never sent, and a crash's breadcrumbs go out undated. The WiFi build sets
+  the clock over SNTP and flushes straight after, so its session start goes out then.
+- **Breadcrumbs need lines that were not sent.** Only lines still in the log ring at the crash
+  become breadcrumbs, so a line flushed before it is a log, not a breadcrumb. With
+  `-DSENTRY_DEMO_CRASH=1` the demo writes two lines and crashes before the next flush.
 - **Heap numbers are the `k_malloc()` pool**, not the libc `malloc()` arena — 4 KB on this
   board unless `CONFIG_HEAP_MEM_POOL_SIZE` is raised.
 - **The flash size is the board definition's, not the chip's.** `esp32s3_devkitc` declares
