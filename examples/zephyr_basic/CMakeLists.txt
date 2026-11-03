@@ -28,6 +28,28 @@ if(DEFINED ENV{SENTRY_MICRO_RELEASE} AND NOT "$ENV{SENTRY_MICRO_RELEASE}" STREQU
   target_compile_definitions(app PRIVATE "SENTRY_RELEASE=\"$ENV{SENTRY_MICRO_RELEASE}\"")
 endif()
 
+# WiFi credentials, from the environment like the DSN. Setting the SSID is what selects the
+# WiFi transport over the serial relay; the network stack it needs comes from wifi.conf.
+if(DEFINED ENV{SENTRY_MICRO_WIFI_SSID} AND NOT "$ENV{SENTRY_MICRO_WIFI_SSID}" STREQUAL "")
+  if(NOT CONFIG_SENTRY_MICRO_TRANSPORT_WIFI)
+    # Caught here rather than as an undefined sentry_wifi_transport_init() at link time.
+    message(FATAL_ERROR "SENTRY_MICRO_WIFI_SSID is set, but this build has no WiFi stack. "
+                        "Add -DEXTRA_CONF_FILE=wifi.conf after the -- of the west command.")
+  endif()
+  target_compile_definitions(app PRIVATE "WIFI_SSID=\"$ENV{SENTRY_MICRO_WIFI_SSID}\"")
+  if(DEFINED ENV{SENTRY_MICRO_WIFI_PASSWORD} AND NOT "$ENV{SENTRY_MICRO_WIFI_PASSWORD}" STREQUAL "")
+    target_compile_definitions(app PRIVATE
+                               "WIFI_PASSWORD=\"$ENV{SENTRY_MICRO_WIFI_PASSWORD}\"")
+  else()
+    message(WARNING "SENTRY_MICRO_WIFI_PASSWORD is not set; this build joins the network as "
+                    "an open one. Export it and rebuild with -p always if it is not.")
+  endif()
+elseif(CONFIG_SENTRY_MICRO_TRANSPORT_WIFI)
+  # Loud for the same reason as the DSN: this builds, flashes and then never touches WiFi.
+  message(WARNING "This build has the WiFi stack but SENTRY_MICRO_WIFI_SSID is not set, so it "
+                  "reports over the serial relay. Export it and rebuild with -p always.")
+endif()
+
 # -DSENTRY_DEMO_CRASH=1 on the west/cmake command line: crash once after the boot event.
 set(SENTRY_DEMO_CRASH 0 CACHE STRING "Crash deliberately after reporting the boot (0 or 1)")
 target_compile_definitions(app PRIVATE SENTRY_DEMO_CRASH=${SENTRY_DEMO_CRASH})

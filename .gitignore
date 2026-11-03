@@ -3,6 +3,7 @@
 
 # Zephyr build directories (west build -d build), e.g. examples/zephyr_basic/build
 build/
+build-*/
 
 # Local WiFi credentials and DSNs. `secrets.example.h` IS tracked; the real one never is —
 # a DSN in git history is a public write key for your Sentry project.

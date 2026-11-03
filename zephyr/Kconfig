@@ -33,6 +33,76 @@ config SENTRY_MICRO_TRANSPORT_SERIAL
 	  the same @SENTRY-RELAY/1 protocol as the Arduino SerialTransport.
 	  Run scripts/serial_relay.py on the host.
 
+config SENTRY_MICRO_TRANSPORT_WIFI
+	bool "WiFi transport: HTTPS straight to ingest"
+	default y
+	depends on WIFI && NET_IPV4 && NET_SOCKETS && NET_SOCKETS_SOCKOPT_TLS && DNS_RESOLVER
+	imply MBEDTLS_PEM_PARSE_C
+	imply MBEDTLS_SSL_SERVER_NAME_INDICATION
+	help
+	  POST envelopes to Sentry ingest over HTTPS, through Zephyr's TLS
+	  sockets, with no host in between. Register it with
+	  sentry_wifi_transport_init() from
+	  <transport/zephyr/sentry_transport_wifi.h>.
+
+	  The application's own configuration owns the network stack: WiFi,
+	  IPv4, DHCP, sockets, DNS, TLS and the mbedTLS heap and record sizes
+	  are all set there (examples/zephyr_basic/wifi.conf has a working
+	  set), and this option only appears once they are. It does default
+	  on two small mbedTLS features the transport cannot work without:
+	  the PEM parser, because the bundled CA is PEM, and server name
+	  indication (SNI), because ingest closes a handshake that does not
+	  name the host it wants.
+
+	  Never call it from a fatal-error handler: the TLS handshake
+	  allocates from the mbedTLS heap.
+
+config SENTRY_MICRO_WIFI_TLS_VERIFY
+	bool "Verify ingest's TLS certificate"
+	default y
+	depends on SENTRY_MICRO_TRANSPORT_WIFI
+	help
+	  Check that the server's certificate chains to a trusted root and
+	  names the ingest host. The root is DigiCert Global Root G2, bundled
+	  with the module, which Sentry's ingest certificate chains to; an
+	  application can pass its own root to sentry_wifi_transport_init()
+	  instead. Certificate dates are not checked unless
+	  MBEDTLS_HAVE_TIME_DATE is set, so this works before the clock is.
+
+	  The bundled root expires on 2038-01-15, and stops matching sooner
+	  if Sentry moves ingest to a certificate from another root. Either
+	  way every handshake then fails until the firmware carries a root
+	  that matches, so a fleet that cannot be updated should consider
+	  passing its own.
+
+	  Turn it off only to debug a handshake, or for an endpoint whose
+	  certificate cannot be verified, such as a self-signed one on a
+	  local network. The connection is then encrypted but not
+	  authenticated: anything on the path can pose as ingest and read
+	  the DSN key from the auth header. The transport logs a warning on
+	  its first send.
+
+config SENTRY_MICRO_WIFI_TIMEOUT_MS
+	int "WiFi transport send and response timeout, in ms"
+	default 10000
+	depends on SENTRY_MICRO_TRANSPORT_WIFI
+	help
+	  Bounds writing the request and waiting for the response headers.
+	  Resolving the host, connecting and the TLS handshake are bounded by
+	  Zephyr's own NET_SOCKETS_DNS_TIMEOUT, NET_SOCKETS_CONNECT_TIMEOUT
+	  and NET_SOCKETS_TLS_CONNECT_TIMEOUT.
+
+config SENTRY_MICRO_WIFI_TLS_SEC_TAG
+	int "TLS credential tag for the WiFi transport's CA"
+	default 1397050964
+	depends on SENTRY_MICRO_TRANSPORT_WIFI
+	help
+	  The security tag the CA certificate is registered under in Zephyr's
+	  TLS credential store. Tags are shared by the whole application, so
+	  the default is a number nothing else is likely to pick: it spells
+	  "SENT" in ASCII (0x53454E54). Change it only if the application
+	  already uses this value for a credential of its own.
+
 config SENTRY_MICRO_FATAL_HANDLER
 	bool "Record fatal errors for the next boot to report"
 	default y

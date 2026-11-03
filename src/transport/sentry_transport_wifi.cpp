@@ -10,6 +10,7 @@
 #        include <WiFiClientSecure.h>
 #    endif
 
+#    include "../core/sentry_http.h"
 #    include "../sentry_micro.h"
 
 namespace sentry {
@@ -21,44 +22,6 @@ void log_line(const char *message)
     if (logger) {
         logger(message);
     }
-}
-
-/**
- * Parse a `Retry-After` value into milliseconds.
- *
- * Sentry sends delta-seconds. The HTTP-date form is legal but would need a parsed clock
- * the device may not have, so an unparseable value yields 0 and the core falls back to
- * its own backoff — better than treating "I could not read this" as "retry immediately".
- */
-uint32_t parse_retry_after_ms(const String &value)
-{
-    if (value.length() == 0) {
-        return 0;
-    }
-    char *end = nullptr;
-    long seconds = strtol(value.c_str(), &end, 10);
-    if (end == value.c_str() || seconds <= 0) {
-        return 0;
-    }
-    /* Clamp: a hostile or garbled header should not park the device for a month. */
-    const long max_seconds = 24L * 60 * 60;
-    if (seconds > max_seconds) {
-        seconds = max_seconds;
-    }
-    return (uint32_t)seconds * 1000u;
-}
-
-/**
- * `X-Sentry-Rate-Limits: <retry_after>:<categories>:<scope>:...`, comma-separated.
- * Only the leading delay is used for now; per-category limits need the core to track
- * which categories it is holding, which is a later milestone.
- */
-uint32_t parse_sentry_rate_limits_ms(const String &value)
-{
-    if (value.length() == 0) {
-        return 0;
-    }
-    return parse_retry_after_ms(value);
 }
 
 } // namespace
@@ -177,9 +140,12 @@ static Response post_envelope(WiFiClient &client, const char *url, const Headers
             ? Response(SEND_UNAVAILABLE)
             : Response(SEND_ERROR);
     } else {
-        uint32_t retry_after_ms = parse_retry_after_ms(http.header("Retry-After"));
+        /* The parsers live in core/sentry_http.c, shared with the Zephyr transport, so both
+         * back off for the same time when ingest asks. */
+        uint32_t retry_after_ms = sentry_http_retry_after_ms(http.header("Retry-After").c_str());
         if (retry_after_ms == 0) {
-            retry_after_ms = parse_sentry_rate_limits_ms(http.header("X-Sentry-Rate-Limits"));
+            retry_after_ms
+                = sentry_http_rate_limits_ms(http.header("X-Sentry-Rate-Limits").c_str());
         }
 
         if (status == 429) {
