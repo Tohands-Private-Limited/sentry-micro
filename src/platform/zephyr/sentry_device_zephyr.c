@@ -1,5 +1,6 @@
 /*
- * The device layer on Zephyr.
+ * The platform layer on Zephyr: clock, reset reason, heap and entropy. What depends on the
+ * silicon instead is behind device/sentry_soc.h.
  *
  * Wrapped whole, includes and all, because PlatformIO's library finder compiles every source
  * under src/ for the Arduino builds too, and none of <zephyr/...> exists there. Outside a
@@ -8,8 +9,8 @@
  */
 #if defined(__ZEPHYR__)
 
-#    include "../sentry_device.h"
-#    include "sentry_persist_zephyr.h"
+#    include "../../device/sentry_device.h"
+#    include "../../device/sentry_soc.h"
 
 #    include <errno.h>
 #    include <stdio.h>
@@ -25,10 +26,6 @@
 
 #    if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
 #        include <zephyr/sys/sys_heap.h>
-#    endif
-
-#    if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
-#        include <hal/efuse_hal.h>
 #    endif
 
 /*
@@ -47,38 +44,6 @@
 #    endif
 #    if defined(CONFIG_MINIMAL_LIBC) && !defined(CONFIG_CBPRINTF_FULL_INTEGRAL)
 #        error "sentry-micro needs long long printf: set CONFIG_CBPRINTF_FULL_INTEGRAL=y"
-#    endif
-
-/*
- * Chip model, resolved at compile time from the SoC series for the same reason the ESP32 port
- * uses the IDF target macros: the answer is fixed by the build, and a runtime lookup either
- * lags new silicon or reports "unknown" on it. The strings match the ESP32 port's exactly,
- * because they are the `chip` tag on every event — the same S3 must not group as two
- * different chips depending on which RTOS it happens to run. Anything else reports
- * Zephyr's own SoC name, which is what a Zephyr user would search for.
- */
-#    if defined(CONFIG_SOC_SERIES_ESP32)
-#        define SENTRY_CHIP_MODEL "ESP32"
-#    elif defined(CONFIG_SOC_SERIES_ESP32S2)
-#        define SENTRY_CHIP_MODEL "ESP32-S2"
-#    elif defined(CONFIG_SOC_SERIES_ESP32S3)
-#        define SENTRY_CHIP_MODEL "ESP32-S3"
-#    elif defined(CONFIG_SOC_SERIES_ESP32C2)
-#        define SENTRY_CHIP_MODEL "ESP32-C2"
-#    elif defined(CONFIG_SOC_SERIES_ESP32C3)
-#        define SENTRY_CHIP_MODEL "ESP32-C3"
-#    elif defined(CONFIG_SOC_SERIES_ESP32C5)
-#        define SENTRY_CHIP_MODEL "ESP32-C5"
-#    elif defined(CONFIG_SOC_SERIES_ESP32C6)
-#        define SENTRY_CHIP_MODEL "ESP32-C6"
-#    elif defined(CONFIG_SOC_SERIES_ESP32C61)
-#        define SENTRY_CHIP_MODEL "ESP32-C61"
-#    elif defined(CONFIG_SOC_SERIES_ESP32H2)
-#        define SENTRY_CHIP_MODEL "ESP32-H2"
-#    elif defined(CONFIG_SOC_SERIES_ESP32P4)
-#        define SENTRY_CHIP_MODEL "ESP32-P4"
-#    else
-#        define SENTRY_CHIP_MODEL CONFIG_SOC
 #    endif
 
 /* Load-bearing for symbolication, not decoration: the families unwind differently. The three
@@ -130,12 +95,12 @@ static sentry_reset_reason_t map_reset_reason(uint32_t cause)
      *   for them), so they report as `unknown`.
      *
      * A Zephyr fatal error with CONFIG_RESET_ON_FATAL_ERROR reboots through esp_restart(),
-     * which the hardware records as a software reset. ESP-IDF tells a panic apart with a hint
-     * its panic handler writes before restarting; Zephyr does not build that handler, so the
-     * fatal-error hook in sentry_coredump_zephyr.c writes the hint instead. The HAL turns it
-     * into ESP_RST_PANIC and hwinfo into RESET_CPU_LOCKUP, which is why that bit means a
-     * panic here. Without the hook (CONFIG_SENTRY_MICRO_FATAL_HANDLER=n and an application
-     * handler that does not call sentry_zephyr_record_fatal()), a panic reads as `software`.
+     * which the hardware records as a software reset. The fatal-error hook in
+     * sentry_coredump_zephyr.c calls sentry_soc_mark_panic() first, and on Espressif that
+     * leaves a hint the HAL turns into ESP_RST_PANIC and hwinfo into RESET_CPU_LOCKUP, which
+     * is why that bit means a panic here. Without the hook (CONFIG_SENTRY_MICRO_FATAL_HANDLER=n and
+     * an application handler that does not call sentry_zephyr_record_fatal()), a panic reads as
+     * `software`.
      */
     if (cause & RESET_CPU_LOCKUP) {
         return SENTRY_RESET_PANIC;
@@ -191,13 +156,9 @@ void sentry_device_info_get(sentry_device_info_t *out)
     }
     memset(out, 0, sizeof(*out));
 
-    snprintf(out->chip_model, sizeof(out->chip_model), "%s", SENTRY_CHIP_MODEL);
+    snprintf(out->chip_model, sizeof(out->chip_model), "%s", sentry_soc_chip_model());
     snprintf(out->arch, sizeof(out->arch), "%s", SENTRY_CHIP_ARCH);
-#    if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
-    /* Already `major * 100 + minor` (hal/efuse_hal.c), the same convention the ESP32 port
-     * reports, so v0.2 reads as 2 on both. */
-    out->chip_revision = (uint16_t)efuse_hal_chip_revision();
-#    endif
+    out->chip_revision = sentry_soc_chip_revision();
     /* The cores this image schedules on, not the cores on the die: the non-SMP
      * esp32s3_devkitc/esp32s3/procpu build reports 1 on a dual-core S3, because the second
      * core runs a separate image (or nothing) and this one never sees it. */
@@ -324,7 +285,7 @@ uint64_t sentry_device_unix_time_us(void)
 
 /*
  * Memory that survives a reset: RTC slow memory on Espressif, `__noinit` SRAM elsewhere. The
- * reasoning, and the one definition all three blocks share, is in sentry_persist_zephyr.h.
+ * reasoning, and the one definition all three blocks share, is in device/sentry_soc.h.
  */
 #    define SENTRY_PERSIST_TRACE SENTRY_PERSIST("sentry_trace")
 #    define SENTRY_PERSIST_BLOCK SENTRY_PERSIST("sentry_block")

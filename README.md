@@ -89,11 +89,15 @@ src/                        the library
     sentry_base64.{h,c}     encoding for the relay protocols
     sentry_buffer.{h,c}     offline ring-buffer policy over a storage vtable
     sentry_transport.{h,c}  the delivery interface
-  device/                   chip-specific: collection and storage
+  device/                   chip-specific: collection, storage and SoC hooks
     sentry_device_esp32.c   chip info, reset reason, entropy, clock
     sentry_storage_nvs.c    buffer storage in NVS
     sentry_storage_fs.cpp   buffer storage on LittleFS/SPIFFS/SD
-    zephyr/                 the same contracts on Zephyr: hwinfo, k_heap, RTC noinit
+    sentry_soc.h            the few SoC hooks the Zephyr platform files call
+    espressif/              those hooks for Espressif parts: chip model and revision, panic hint
+    generic/                those hooks for any other Zephyr SoC
+  platform/
+    zephyr/                 the same contracts on Zephyr: hwinfo, k_heap, the fatal-error hook
   transport/
     sentry_transport.hpp        C++ base class over the C interface
     sentry_transport_wifi.*     HTTPS straight to ingest

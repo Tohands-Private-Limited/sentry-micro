@@ -449,3 +449,8 @@
 - The Xtensa EXCCAUSE and RISC-V `mcause` name tables moved from the ESP32 core dump reader
   into `core/sentry_coredump.c`, shared by both ports and covered by host tests. Same strings,
   so existing issue titles are unchanged.
+- The Zephyr port is split into `src/platform/zephyr/` (what depends on the OS: clock, reset
+  reason, heap, the fatal-error hook) and `src/device/<family>/` (what depends on the silicon:
+  the retained-memory section, the panic hint, the chip model and revision), chosen at compile
+  time by `zephyr/CMakeLists.txt` with no weak fallback, so a missing SoC file is a link error.
+  No behaviour change.
