@@ -31,9 +31,22 @@ if(CONFIG_SENTRY_MICRO)
     ${SENTRY_MICRO_SRC}/core/sentry_trace.c
     ${SENTRY_MICRO_SRC}/core/sentry_transport.c
     ${SENTRY_MICRO_SRC}/sentry_micro.c
-    ${SENTRY_MICRO_SRC}/device/zephyr/sentry_device_zephyr.c
-    ${SENTRY_MICRO_SRC}/device/zephyr/sentry_coredump_zephyr.c
+    ${SENTRY_MICRO_SRC}/platform/zephyr/sentry_device_zephyr.c
+    ${SENTRY_MICRO_SRC}/platform/zephyr/sentry_coredump_zephyr.c
   )
+
+  # Exactly one SoC implementation is built, chosen here at compile time. The three hooks in
+  # device/sentry_soc.h have no weak fallback on purpose: a family file that is missing, or
+  # a second one that also gets built, is a link error. A weak no-op sentry_soc_mark_panic()
+  # that silently won would instead build fine and make every crash read back as a plain
+  # software reset. A new SoC family adds its device/<family>/sentry_soc_<family>.c and a
+  # line here, and nothing in platform/.
+  zephyr_library_sources_ifdef(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32
+    ${SENTRY_MICRO_SRC}/device/espressif/sentry_soc_espressif.c
+  )
+  if(NOT CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+    zephyr_library_sources(${SENTRY_MICRO_SRC}/device/generic/sentry_soc_generic.c)
+  endif()
 
   # The crash record reads Xtensa's exception frame and walks the stack from it. Zephyr's
   # public headers declare that frame only as a placeholder; the real layout

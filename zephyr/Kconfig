@@ -116,7 +116,7 @@ config SENTRY_MICRO_FATAL_HANDLER
 
 	  Only one k_sys_fatal_error_handler() can be linked. An application
 	  that needs its own should say n here and call
-	  sentry_zephyr_record_fatal() (device/zephyr/sentry_coredump_zephyr.h)
+	  sentry_zephyr_record_fatal() (platform/zephyr/sentry_coredump_zephyr.h)
 	  first thing from its handler.
 
 config SENTRY_MICRO_SERIAL_TIMEOUT_MS

@@ -16,11 +16,11 @@
  *   CONFIG_SENTRY_MICRO_FATAL_HANDLER (the default) this file provides it: record, then do
  *   exactly what the weak default does. An application with its own handler turns that off
  *   and calls `sentry_zephyr_record_fatal()` itself.
- * - The record lives in `.rtc_noinit` on Espressif (sentry_persist_zephyr.h), beside the
+ * - The record lives in `.rtc_noinit` on Espressif (device/sentry_soc.h), beside the
  *   trace and the log ring, so nothing is written to flash from inside a fault handler.
- * - On Espressif, `esp_reset_reason_set_hint(ESP_RST_PANIC)` before the reboot. The HAL reads
- *   the hint back on the next boot and hwinfo reports RESET_CPU_LOCKUP, which the device layer
- *   maps to `panic`. Without it the reboot reads as a plain software reset.
+ * - `sentry_soc_mark_panic()` before the reboot. On Espressif it sets the reset-reason hint;
+ *   the HAL reads it back on the next boot and hwinfo reports RESET_CPU_LOCKUP, which the
+ *   platform layer maps to `panic`. Without it the reboot reads as a plain software reset.
  * - On Xtensa the stack is walked with the same building blocks, and the same loop, as
  *   Zephyr's own console backtrace (`xtensa_backtrace_print()`), so the frames in Sentry are
  *   the frames on the serial console.
@@ -44,8 +44,8 @@
 #if defined(__ZEPHYR__)
 
 #    include "sentry_coredump_zephyr.h"
-#    include "../sentry_coredump_device.h"
-#    include "sentry_persist_zephyr.h"
+#    include "../../device/sentry_coredump_device.h"
+#    include "../../device/sentry_soc.h"
 
 #    include <stdio.h>
 #    include <string.h>
@@ -79,13 +79,6 @@
 #    endif
 #    ifndef SENTRY_XTENSA_WALK
 #        define SENTRY_XTENSA_WALK 0
-#    endif
-
-#    if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
-/* Declares esp_reset_reason_set_hint(). hal_espressif compiles the implementation for every
- * Espressif series (esp_system/port/soc/<series>/reset_reason.c) and puts this header on the
- * global include path. */
-#        include <esp_private/system_internal.h>
 #    endif
 
 /*
@@ -273,11 +266,9 @@ void sentry_zephyr_record_fatal(unsigned int reason, const struct arch_esf *esf)
     }
     g_recording = true;
 
-#    if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
     /* First, before anything that could fault again: whatever else goes wrong, the next boot
      * should at least read `panic` rather than `software`. */
-    esp_reset_reason_set_hint(ESP_RST_PANIC);
-#    endif
+    sentry_soc_mark_panic();
 
     struct sentry_crash_record *rec = &g_sentry_crash_record;
     /* Invalidate before writing, and publish the magic last, so a record is either whole

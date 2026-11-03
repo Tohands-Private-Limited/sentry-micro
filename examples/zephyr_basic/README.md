@@ -179,7 +179,7 @@ the `@SENTRY-RELAY-RESULT/1` answer.
   Zephyr prints on the console, or resolve them with `addr2line` against `build/zephyr/zephyr.elf`.
 - **sentry-micro owns `k_sys_fatal_error_handler()`.** An application with its own handler
   sets `CONFIG_SENTRY_MICRO_FATAL_HANDLER=n` and calls `sentry_zephyr_record_fatal()` from it
-  (`src/device/zephyr/sentry_coredump_zephyr.h`).
+  (`src/platform/zephyr/sentry_coredump_zephyr.h`).
 - **No offline storage.** An event that cannot be delivered is dropped, not buffered. Over
   WiFi that includes the boot event of a board whose network was not up in time; a recovered
   crash is kept in RTC memory and tried again on the next boot.
