@@ -461,3 +461,11 @@
   the retained-memory section, the panic hint, the chip model and revision), chosen at compile
   time by `zephyr/CMakeLists.txt` with no weak fallback, so a missing SoC file is a link error.
   No behaviour change.
+- Zephyr symbolication: `scripts/zephyr_release.py`, also `west sentry-release`, builds with the
+  build-id, image address and size compiled in (read from the environment by
+  `zephyr/CMakeLists.txt`), iterates to a fixpoint like `release.sh`, and checks and uploads
+  `zephyr.sentry.elf`, a copy stamped with the build-id whose PT_LOAD headers
+  `scripts/elf_sort_loads.py` has sorted, because Sentry takes the first one as the load address
+  and Zephyr's ESP32-S3 ELF lists RTC memory first. Verified end to end on an ESP32-S3: the
+  crash from the flashed image renders in the Sentry UI with all six frames resolved to
+  function, file and line.

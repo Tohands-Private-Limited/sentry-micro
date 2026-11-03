@@ -1067,7 +1067,9 @@ across a reset, and `sentry_capture_message()`. Events report `sdk.name` as
 
 Crashes are caught by a `k_sys_fatal_error_handler()` that records the exception, the faulting
 PC and a backtrace in RTC memory; the next boot reads `panic` and reports it with
-`sentry_event_attach_coredump()`. The frames are unsymbolicated addresses in Sentry for now.
+`sentry_event_attach_coredump()`. `scripts/zephyr_release.py` (or `west sentry-release`) builds
+with the build-id and image geometry compiled in and uploads a stamped copy of the ELF, so
+Sentry can resolve the frames; the sample's README has the commands.
 Both the boot event and the crash path have been run on an ESP32-S3 and reached Sentry,
 delivered through `scripts/serial_relay.py` by a C serial transport speaking the same
 `@SENTRY-RELAY/1` protocol.

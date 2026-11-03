@@ -1,0 +1,9 @@
+# `west sentry-release`, for a west workspace whose manifest lists this repository with
+# `west-commands: zephyr/west-commands.yml`. ZEPHYR_EXTRA_MODULES is not enough: west reads
+# extension commands from manifest projects only.
+west-commands:
+  - file: zephyr/west_commands/sentry_release.py
+    commands:
+      - name: sentry-release
+        class: SentryRelease
+        help: build, stamp and upload a release so Sentry symbolicates its crashes

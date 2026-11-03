@@ -11,6 +11,34 @@ if(CONFIG_SENTRY_MICRO)
 
   zephyr_library_named(sentry_micro)
 
+  # What the firmware reports so Sentry can symbolicate its frames: the build-id stamped into
+  # the uploaded ELF, the image's load address and size, and the module name. They come from
+  # the environment at configure time, the same mechanism scripts/env_secrets.py uses on
+  # PlatformIO, because scripts/zephyr_release.py only knows them after measuring a linked
+  # image and has to feed them back into the next build. Being read at configure time, a
+  # changed value takes effect only after a reconfigure, which is why that script builds with
+  # -p always. Unset, they are absent and sentry_micro.c falls back to its defaults; the
+  # release itself is the application's, as SENTRY_RELEASE (examples/zephyr_basic).
+  if(DEFINED ENV{SENTRY_MICRO_BUILD_ID} AND NOT "$ENV{SENTRY_MICRO_BUILD_ID}" STREQUAL "")
+    zephyr_library_compile_definitions("SENTRY_BUILD_ID_HEX=\"$ENV{SENTRY_MICRO_BUILD_ID}\"")
+  endif()
+  if(DEFINED ENV{SENTRY_MICRO_IMAGE_NAME} AND NOT "$ENV{SENTRY_MICRO_IMAGE_NAME}" STREQUAL "")
+    zephyr_library_compile_definitions("SENTRY_IMAGE_NAME=\"$ENV{SENTRY_MICRO_IMAGE_NAME}\"")
+  endif()
+  # The address and size are numbers, "0x..." as scripts/elf_info.py --export prints them.
+  # Checked here because a malformed value would otherwise surface as a confusing compile
+  # error inside sentry_micro.c.
+  foreach(var ADDR SIZE)
+    set(value "$ENV{SENTRY_MICRO_IMAGE_${var}}")
+    if(NOT value STREQUAL "")
+      if(NOT value MATCHES "^(0[xX][0-9a-fA-F]+|[0-9]+)$")
+        message(FATAL_ERROR "SENTRY_MICRO_IMAGE_${var} must be a number such as 0x12820, "
+                            "got \"${value}\"")
+      endif()
+      zephyr_library_compile_definitions(SENTRY_IMAGE_${var}=${value}ULL)
+    endif()
+  endforeach()
+
   # Applications include <sentry_micro.h>, exactly as on Arduino and ESP-IDF.
   zephyr_include_directories(${SENTRY_MICRO_SRC})
 

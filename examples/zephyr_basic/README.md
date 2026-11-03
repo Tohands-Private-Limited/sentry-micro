@@ -160,6 +160,78 @@ board's partition layout with room to spare.
 `CONFIG_MBEDTLS_HAVE_TIME_DATE` is off and certificate dates will not be checked. That is the
 trade described above, made on purpose so verification works before the clock is set.
 
+## Symbolicated crashes
+
+`scripts/zephyr_release.py` is the Zephyr counterpart of `scripts/release.sh`: it builds the
+application with its build-id, load address and image size compiled in, rebuilding until
+the measured address and size stop moving, then writes an upload copy of the ELF,
+`<build-dir>/zephyr/zephyr.sentry.elf`, with that build-id stamped in. It reads the copy
+back with `sentry-cli debug-files check` and uploads it to Sentry, which then resolves
+the crash frames to functions, files and lines. From the repository root, with the
+environment from [Build](#build) and the secrets exported:
+
+```bash
+.venv/bin/python scripts/zephyr_release.py -b esp32s3_devkitc/esp32s3/procpu \
+    -d build-wifi examples/zephyr_basic -- \
+    -DEXTRA_DTC_OVERLAY_FILE=usb_serial.overlay -DEXTRA_CONF_FILE=wifi.conf
+west flash -d build-wifi --esp-device /dev/ttyACM0
+```
+
+`-d` is relative to the current directory, as with `west build`, so this `build-wifi` is at
+the repository root, not the sample's own; flash from the directory the release ran in.
+Everything after `--` goes to CMake, as with `west build`; add `-DSENTRY_DEMO_CRASH=1` there
+for a crash to look at. The release defaults to `$SENTRY_MICRO_RELEASE`, else
+`<app-dir>@<git describe>` (`-r` to set it); the build-id is the SHA-1 of
+`<release>/<board>`, so each board gets its own. Uploading needs an organization auth token
+(`SENTRY_AUTH_TOKEN` or `sentry-cli login`). The project comes from the DSN, the org from the
+token (or `SENTRY_ORG`). `--no-upload` stops after the check and needs no credentials at all.
+`--help` lists the rest, which mirror `release.sh`: `--no-commits`, `--no-sources`,
+`--no-wait`, `--json-summary`.
+
+Every pass is a pristine build (`-p always`), because the module reads these values from the
+environment when CMake configures and an incremental build would keep the previous pass's
+numbers. The WiFi crash build settles in three passes.
+
+**Flashing afterwards is correct.** `west flash` rebuilds before it flashes, but with the
+sources unchanged that rebuild has nothing to do (`ninja: no work to do`, even from a shell
+without the release variables), so the board gets the image that was measured. That is
+also why the stamp goes on a copy: the device image is `zephyr.bin`, which already carries
+the build-id and geometry, and `zephyr.elf` is left exactly as Zephyr linked it. Change a
+source after the release and the flash would be a different build: run the release again.
+
+**Why the copy's program headers are sorted.** Sentry takes an ELF's load address from its
+*first* PT_LOAD header in table order. Zephyr's ESP32-S3 ELF lists 36 bytes of RTC memory at
+0x50000000 first, above all of the code, so uploaded as it is nothing would resolve.
+`scripts/elf_sort_loads.py` sorts the copy's PT_LOAD entries by address, which makes the first
+one 0x00012820, the address the firmware reports.
+
+**As a west command.** West finds extension commands only in projects its manifest lists,
+so a workspace that wants `west sentry-release` lists this repository, for example in a
+`submanifests/sentry-micro.yml` imported by the workspace's `west.yml`:
+
+```yaml
+manifest:
+  projects:
+    - name: sentry-micro
+      url: https://github.com/getsentry/sentry-micro
+      path: modules/lib/sentry-micro
+      west-commands: zephyr/west-commands.yml
+```
+
+Then `west sentry-release` takes the same arguments as the script. The project's `path`
+has to be inside the workspace; west rejects one that is not.
+
+What has been checked, for the WiFi crash build: the image settles at `0x12820 +0x4205f850`
+on the third pass; `zephyr.bin` contains the build-id, release and image name as strings;
+`readelf -n` shows the build-id note on the copy and `readelf -lW` its PT_LOADs in address
+order, with `zephyr.elf` untouched. `sentry-cli debug-files check` reads the copy as usable
+with the expected debug id. getsentry's `symbolic` library, which Sentry symbolicates with,
+resolves the three demo functions, `main` and `z_thread_entry` from the copy to the right
+function and line, and none of them from the unsorted `zephyr.elf`. The upload was
+accepted and processed (`--wait`). And the board agrees: a crash from the flashed image
+renders in Sentry with every frame named, `demo_crash_innermost` at `main.c:375` through
+`main` to `z_thread_entry`, each with its source line.
+
 ## Why `CONFIG_LOG_MODE_MINIMAL`
 
 The relay request is one line on the console UART, around 450 ms on the wire for a 4 KB
@@ -174,9 +246,6 @@ the `@SENTRY-RELAY-RESULT/1` answer.
 
 ## Known gaps in this milestone
 
-- **Frames are hex.** Zephyr links with `--build-id=none` and there is no release flow that
-  uploads its ELF, so Sentry cannot symbolicate them yet. Compare them against the backtrace
-  Zephyr prints on the console, or resolve them with `addr2line` against `build/zephyr/zephyr.elf`.
 - **sentry-micro owns `k_sys_fatal_error_handler()`.** An application with its own handler
   sets `CONFIG_SENTRY_MICRO_FATAL_HANDLER=n` and calls `sentry_zephyr_record_fatal()` from it
   (`src/platform/zephyr/sentry_coredump_zephyr.h`).
