@@ -44,8 +44,8 @@
 #if defined(__ZEPHYR__)
 
 #    include "sentry_coredump_zephyr.h"
-#    include "../../device/sentry_coredump_device.h"
 #    include "../../device/sentry_soc.h"
+#    include "../sentry_coredump_device.h"
 
 #    include <stdio.h>
 #    include <string.h>

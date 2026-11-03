@@ -9,8 +9,8 @@
  */
 #if defined(__ZEPHYR__)
 
-#    include "../../device/sentry_device.h"
 #    include "../../device/sentry_soc.h"
+#    include "../sentry_device.h"
 
 #    include <errno.h>
 #    include <stdio.h>

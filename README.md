@@ -89,15 +89,16 @@ src/                        the library
     sentry_base64.{h,c}     encoding for the relay protocols
     sentry_buffer.{h,c}     offline ring-buffer policy over a storage vtable
     sentry_transport.{h,c}  the delivery interface
-  device/                   chip-specific: collection, storage and SoC hooks
-    sentry_device_esp32.c   chip info, reset reason, entropy, clock
-    sentry_storage_nvs.c    buffer storage in NVS
-    sentry_storage_fs.cpp   buffer storage on LittleFS/SPIFFS/SD
-    sentry_soc.h            the few SoC hooks the Zephyr platform files call
-    espressif/              those hooks for Espressif parts: chip model and revision, panic hint
-    generic/                those hooks for any other Zephyr SoC
-  platform/
+  platform/                 the porting interface and one implementation of it per platform
+    sentry_device.h         the interface: device info, heap, uptime, entropy, clock
+    sentry_coredump_device.h  the interface: the crash dump
+    esp-idf/                ESP-IDF, also under Arduino: chip info, reset reason, coredump, NVS storage
+    arduino/                buffer storage on LittleFS/SPIFFS/SD
     zephyr/                 the same contracts on Zephyr: hwinfo, k_heap, the fatal-error hook
+  device/                   what depends on the silicon rather than the OS
+    sentry_soc.h            the SoC hooks: chip model, revision, panic marker
+    espressif/              those hooks for Espressif parts, under Zephyr and ESP-IDF
+    generic/                those hooks for any other Zephyr SoC
   transport/
     sentry_transport.hpp        C++ base class over the C interface
     sentry_transport_wifi.*     HTTPS straight to ingest
@@ -119,10 +120,10 @@ platformio.ini              host test project (firmware builds live in the examp
 
 Two splits are load-bearing rather than tidy:
 
-**`core/` vs `device/`.** Everything in `core/` compiles on a laptop, so DSN parsing — and
+**`core/` vs `platform/`.** Everything in `core/` compiles on a laptop, so DSN parsing — and
 later envelope construction — is tested in milliseconds by `pio test` instead of by flashing
-a board. `device/` is the porting boundary: when ESP8266 or nRF52 arrives, it gets a sibling
-of `sentry_device_esp32.c` and `core/` does not move.
+a board. `platform/` is the porting boundary: when ESP8266 or nRF52 arrives, it gets a sibling
+of `platform/esp-idf/` and `core/` does not move.
 
 **C is the API; C++ is a wrapper.** The whole SDK, including the transport interface, is
 plain C, so it is usable from an ESP-IDF component with no C++ runtime. The C++ names are

@@ -182,12 +182,13 @@ cd examples/wifi_basic && pio run && pio run -e esp32-c6
 The `core/` vs `device/` split is load-bearing: everything in `core/` is freestanding C that
 compiles on a laptop, which is why the wire format, the ring buffer and the relay framing are
 all testable in milliseconds without hardware. Put anything portable there and it gets tests
-for free. Anything that touches ESP-IDF goes in `device/`; anything that touches Zephyr goes
-in `platform/zephyr/` or `transport/zephyr/`, wrapped whole in `#if defined(__ZEPHYR__)`,
-because PlatformIO compiles every file under `src/` for the Arduino builds too. What depends
-on the silicon rather than the OS goes behind `device/sentry_soc.h`, in `device/<family>/`;
-adding an SoC family under Zephyr means adding `device/<family>/sentry_soc_<family>.c` and one
-line in `zephyr/CMakeLists.txt`, and nothing in `platform/`.
+for free. Anything that touches an OS or framework goes in `platform/<name>/` (`esp-idf/`, `arduino/`,
+`zephyr/`), implementing the two headers at the top of `platform/`, and wrapped whole in its own
+guard (`#if defined(__ZEPHYR__)`, `ARDUINO`), because PlatformIO compiles every file under
+`src/` for the Arduino builds too. What depends on the silicon rather than the OS goes behind
+`device/sentry_soc.h`, in `device/<family>/`; adding an SoC family means adding
+`device/<family>/sentry_soc_<family>.c` and, for Zephyr, one line in `zephyr/CMakeLists.txt`,
+and nothing in `platform/`.
 
 There are two more builds to keep green when you touch `core/` or the Zephyr files:
 [`examples/zephyr_basic`](examples/zephyr_basic/README.md) for `esp32s3_devkitc`, built

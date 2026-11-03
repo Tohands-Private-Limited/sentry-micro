@@ -1,4 +1,4 @@
-#include "sentry_coredump_device.h"
+#include "../sentry_coredump_device.h"
 
 #include <stdio.h>
 #include <string.h>

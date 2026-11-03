@@ -42,8 +42,8 @@
 #include "core/sentry_throttle.h"
 #include "core/sentry_trace.h"
 #include "core/sentry_transport.h"
-#include "device/sentry_coredump_device.h"
-#include "device/sentry_device.h"
+#include "platform/sentry_coredump_device.h"
+#include "platform/sentry_device.h"
 
 /** Version of this SDK, as a string, for compile-time checks. */
 #define SENTRY_MICRO_VERSION SENTRY_MICRO_SDK_VERSION

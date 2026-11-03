@@ -8,7 +8,7 @@
  * coredumps to them later.
  *
  *     #include <LittleFS.h>
- *     #include <device/sentry_storage_fs.hpp>
+ *     #include <platform/arduino/sentry_storage_fs.hpp>
  *
  *     LittleFS.begin();                                  // your code, as it already is
  *     sentry_enable_buffering(sentry::storage_fs(LittleFS, 8));
@@ -24,7 +24,7 @@
 #ifndef SENTRY_MICRO_STORAGE_FS_HPP_INCLUDED
 #define SENTRY_MICRO_STORAGE_FS_HPP_INCLUDED
 
-#include "../core/sentry_buffer.h"
+#include "../../core/sentry_buffer.h"
 
 #if defined(ARDUINO)
 

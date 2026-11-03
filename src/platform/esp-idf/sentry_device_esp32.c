@@ -1,4 +1,5 @@
-#include "sentry_device.h"
+#include "../../device/sentry_soc.h"
+#include "../sentry_device.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,35 +15,6 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-
-/*
- * Chip model is resolved at compile time from the IDF target macros rather than at
- * runtime from `esp_chip_info().model`. The enum gains a new constant with every new
- * silicon family, so a runtime switch either fails to build on older IDF or silently
- * reports "unknown" on newer chips; the CONFIG_IDF_TARGET_* macros have been stable
- * since IDF 4 and cost nothing at runtime.
- */
-#if defined(CONFIG_IDF_TARGET_ESP32)
-#    define SENTRY_CHIP_MODEL "ESP32"
-#elif defined(CONFIG_IDF_TARGET_ESP32S2)
-#    define SENTRY_CHIP_MODEL "ESP32-S2"
-#elif defined(CONFIG_IDF_TARGET_ESP32S3)
-#    define SENTRY_CHIP_MODEL "ESP32-S3"
-#elif defined(CONFIG_IDF_TARGET_ESP32C2)
-#    define SENTRY_CHIP_MODEL "ESP32-C2"
-#elif defined(CONFIG_IDF_TARGET_ESP32C3)
-#    define SENTRY_CHIP_MODEL "ESP32-C3"
-#elif defined(CONFIG_IDF_TARGET_ESP32C5)
-#    define SENTRY_CHIP_MODEL "ESP32-C5"
-#elif defined(CONFIG_IDF_TARGET_ESP32C6)
-#    define SENTRY_CHIP_MODEL "ESP32-C6"
-#elif defined(CONFIG_IDF_TARGET_ESP32H2)
-#    define SENTRY_CHIP_MODEL "ESP32-H2"
-#elif defined(CONFIG_IDF_TARGET_ESP32P4)
-#    define SENTRY_CHIP_MODEL "ESP32-P4"
-#else
-#    define SENTRY_CHIP_MODEL "ESP32-unknown"
-#endif
 
 /* Xtensa on the original line and the S-series; RISC-V on everything from the C-series on.
  * Compile-time for the same reason as the model: the answer is fixed by the target. */
@@ -97,9 +69,9 @@ void sentry_device_info_get(sentry_device_info_t *out)
     esp_chip_info_t chip;
     esp_chip_info(&chip);
 
-    snprintf(out->chip_model, sizeof(out->chip_model), "%s", SENTRY_CHIP_MODEL);
+    snprintf(out->chip_model, sizeof(out->chip_model), "%s", sentry_soc_chip_model());
     snprintf(out->arch, sizeof(out->arch), "%s", SENTRY_CHIP_ARCH);
-    out->chip_revision = (uint16_t)chip.revision;
+    out->chip_revision = sentry_soc_chip_revision();
     out->cpu_cores = (uint8_t)chip.cores;
 
     snprintf(out->sdk_version, sizeof(out->sdk_version), "%s", esp_get_idf_version());

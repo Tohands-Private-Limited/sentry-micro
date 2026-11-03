@@ -11,7 +11,7 @@
 #ifndef SENTRY_MICRO_STORAGE_NVS_H_INCLUDED
 #define SENTRY_MICRO_STORAGE_NVS_H_INCLUDED
 
-#include "../core/sentry_buffer.h"
+#include "../../core/sentry_buffer.h"
 
 #ifdef __cplusplus
 extern "C" {
