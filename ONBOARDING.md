@@ -107,6 +107,13 @@ is the part that is easy to get wrong by hand:
 
 `.github/workflows/release.yml` is the full version, sharded one job per variant.
 
+On Zephyr the same chain is `scripts/zephyr_release.py` (or `west sentry-release`), which takes
+`west build`'s board, build directory, source directory and `--` CMake arguments, iterates to
+the same fixpoint, and uploads `<build-dir>/zephyr/zephyr.sentry.elf`, a stamped copy, while
+`west flash -d <build-dir>` flashes the image it measured.
+[`examples/zephyr_basic`](examples/zephyr_basic/README.md#symbolicated-crashes) has the exact
+commands.
+
 
 ## Traps
 
@@ -123,6 +130,13 @@ returned `200`, `sentry-cli` said `Usable: yes`, and the `debug_id` matched — 
 still rendered `<unknown>`. There is no error anywhere in that chain. The only way to know
 symbolication works is to look at an issue in the UI. Do that after any change to
 `debug_meta`, the release script, or the linker layout.
+
+**Sentry takes the first PT_LOAD as the load address, not the lowest.** symbolic rebases
+every symbol against the `p_vaddr` of the first PT_LOAD header in table order. The Zephyr ESP32
+ELF lists RTC memory at 0x50000000 first, above all of the code, so uploaded as linked not one
+frame would resolve, with the same silence as above. Hence the sorted upload copy:
+`scripts/elf_sort_loads.py` puts the lowest PT_LOAD first, which is the `image_addr`
+`elf_info.py` measures and the firmware reports. Leave the build's own `zephyr.elf` alone.
 
 **Arduino core 2.x and 3.x are not source-compatible.** The four default envs are core 2.x
 (IDF 4.4.7); `esp32-c6` is core 3.x (IDF 5.x) via the pioarduino fork. Core 3.x renamed the
@@ -229,7 +243,9 @@ chip's native USB, and again over WiFi):
 - **Crash -> reboot -> report.** A null store three calls deep is recorded by the fatal-error
   hook into RTC slow memory, the reboot reads `panic`, and the next boot reports it with the
   six frames Zephyr printed on the console, which `addr2line` resolves to the three demo
-  functions, `main`, and the kernel's two entry frames. Not symbolicated in Sentry yet.
+  functions, `main`, and the kernel's two entry frames. With the ELF copy that
+  `zephyr_release.py` uploads, the same crash renders symbolicated in the Sentry UI: all six
+  frames named with file, line and source context.
 - **The WiFi transport delivers, with the certificate checked.** The board joins a 2.4 GHz
   network, sets its clock over SNTP, and both the boot event and a recovered crash report
   POST straight to ingest over TLS 1.2 with `TLS_PEER_VERIFY_REQUIRED` against the bundled

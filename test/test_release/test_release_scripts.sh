@@ -161,5 +161,38 @@ expect 0 "treats a missing sentry-cli as optional when asked to" \
         --sentry-cli definitely-not-installed --optional
 
 echo
+echo "elf_sort_loads.py"
+# A minimal 32-bit little-endian ELF, header and program headers only, laid out the way
+# Zephyr's ESP32-S3 link is: a high PT_LOAD first, a lower one later, a non-LOAD entry in
+# between that must stay in its slot.
+python3 - "${WORK}/unsorted.elf" <<'PYEOF'
+import struct, sys
+phdrs = [(1, 0x50000000), (4, 0x0), (1, 0x40374000), (1, 0x12820)]  # (p_type, p_vaddr)
+header = (b"\x7fELF\x01\x01\x01" + bytes(9)
+          + struct.pack("<HHIIIIIHHHHHH", 2, 94, 1, 0, 52, 0, 0, 52, 32, len(phdrs), 40, 0, 0))
+table = b"".join(struct.pack("<8I", t, 0, v, v, 0, 0x10, 6, 4) for t, v in phdrs)
+open(sys.argv[1], "wb").write(header + table)
+PYEOF
+expect 0 "sorts a copy" \
+    python3 "${SCRIPTS}/elf_sort_loads.py" "${WORK}/unsorted.elf" -o "${WORK}/sorted.elf"
+# The property symbolic depends on: the first PT_LOAD is the lowest one, and nothing else
+# moved.
+expect 0 "puts the lowest PT_LOAD first and leaves other entries in their slots" \
+    python3 -c "
+import struct, sys
+data = open('${WORK}/sorted.elf', 'rb').read()
+got = [struct.unpack_from('<I', data, 52 + i * 32 + o)[0] for i in range(4) for o in (0, 8)]
+sys.exit(got != [1, 0x12820, 4, 0, 1, 0x40374000, 1, 0x50000000])"
+expect 0 "is idempotent" \
+    python3 "${SCRIPTS}/elf_sort_loads.py" "${WORK}/sorted.elf" -o "${WORK}/sorted-again.elf"
+expect 0 "a second run changes nothing" cmp "${WORK}/sorted.elf" "${WORK}/sorted-again.elf"
+# Sorting the build's own ELF is what the upload copy exists to avoid; an output path that
+# names the input must not do it by accident.
+expect 2 "refuses to overwrite its input without --in-place" \
+    python3 "${SCRIPTS}/elf_sort_loads.py" "${WORK}/unsorted.elf" -o "${WORK}/unsorted.elf"
+expect 1 "rejects a file that is not an ELF" \
+    python3 "${SCRIPTS}/elf_sort_loads.py" "${WORK}/platformio.ini" -o "${WORK}/out.elf"
+
+echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]
