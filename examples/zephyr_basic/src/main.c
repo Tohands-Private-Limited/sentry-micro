@@ -1,9 +1,11 @@
 /*
  * sentry-micro — zephyr_basic
  *
- * The Zephyr counterpart of examples/wifi_basic's boot path: initialise sentry-micro from a
- * DSN, print what the SDK worked out about this boot — the ingest endpoint, the device id,
- * and why the chip came up — then report that boot as one event through the serial relay.
+ * The Zephyr counterpart of examples/wifi_basic's boot and crash paths: initialise
+ * sentry-micro from a DSN, print what the SDK worked out about this boot — the ingest
+ * endpoint, the device id, and why the chip came up — then report either the crash the
+ * previous boot died of, with its backtrace, or else this boot as one event, through the
+ * serial relay.
  *
  * No WiFi here: the board reaches Sentry through the laptop it is plugged into, which runs
  * scripts/serial_relay.py on the same UART this console uses. See README.md for the build,
@@ -28,7 +30,8 @@
 #    define SENTRY_RELEASE "sentry-micro-example@" SENTRY_MICRO_VERSION
 #endif
 
-/* -DSENTRY_DEMO_CRASH=1 to crash deliberately once the boot event is out. */
+/* -DSENTRY_DEMO_CRASH=1 to crash deliberately once the boot event is out, and report it
+ * on the next boot. */
 #ifndef SENTRY_DEMO_CRASH
 #    define SENTRY_DEMO_CRASH 0
 #endif
@@ -93,6 +96,76 @@ static const char *send_result_name(sentry_send_result_t result)
     }
 }
 
+/**
+ * Report the crash the previous boot recorded, if there is one.
+ *
+ * Returns true if a crash was reported, so the caller knows not to report the same boot a
+ * second time as a plain "Device booted: panic".
+ */
+static bool report_crash(void)
+{
+    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
+    sentry_event_t event;
+    sentry_coredump_t crash;
+
+    if (!sentry_event_prepare(&event, event_id)) {
+        return false;
+    }
+    /* `crash` has to outlive the event, which points into it — hence both being locals of
+     * this function rather than the event owning a copy. */
+    if (!sentry_event_attach_coredump(&event, &crash)) {
+        return false;
+    }
+
+    char message[128];
+    const char *type = crash.exception_type[0] ? crash.exception_type : "Panic";
+    if (crash.task_name[0]) {
+        snprintf(message, sizeof(message), "%s in thread %s", type, crash.task_name);
+    } else {
+        snprintf(message, sizeof(message), "%s", type);
+    }
+    event.message = message;
+
+    printk("\n");
+    printk("── crash recovered from the previous boot ────\n");
+    printk("exception     : %s\n", crash.exception_type);
+    printk("thread        : %s\n", crash.task_name);
+    printk("pc            : 0x%08x\n", (unsigned)crash.exception_pc);
+    if (crash.exception_addr_valid) {
+        printk("accessing     : 0x%08x\n", (unsigned)crash.exception_addr);
+    }
+    printk("backtrace     : %u frames%s\n", (unsigned)crash.frame_count,
+        crash.truncated ? " (truncated)" : "");
+    for (uint32_t i = 0; i < crash.frame_count; i++) {
+        printk("  #%u 0x%08x\n", (unsigned)i, (unsigned)crash.frames[i]);
+    }
+    printk("──────────────────────────────────────────────\n");
+
+    /* Same 2 KB as the SDK's own envelope buffer, and on this stack for the same reason: no
+     * heap on the crash path. CONFIG_MAIN_STACK_SIZE has the room. */
+    char envelope[2048];
+    size_t needed = sentry_envelope_write(envelope, sizeof(envelope), &event);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        printk("[sentry] crash envelope needs %u bytes\n", (unsigned)needed);
+        return true;
+    }
+
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+    printk("[sentry] crash report: %s (http %u)\n", send_result_name(response.result),
+        (unsigned)response.http_status);
+
+    /* Erase only once the envelope is somewhere durable — delivered, or in the buffer.
+     * Erasing on a plain failure would throw away the crash we just recovered. */
+    if (response.result == SENTRY_SEND_OK || sentry_buffered_count() > 0) {
+        sentry_coredump_erase();
+        printk("[sentry] crash record erased\n");
+    } else {
+        printk("[sentry] crash record kept for the next boot\n");
+    }
+    printk("[sentry] crash event %s\n", event_id);
+    return true;
+}
+
 static void report_boot(void)
 {
     const sentry_device_info_t *dev = sentry_get_device_info();
@@ -123,9 +196,8 @@ static void report_boot(void)
  * is read from a volatile rather than written as a constant 0: the Zephyr SDK's GCC proves a
  * store to a literal null pointer is undefined, treats the whole call chain as unreachable,
  * and deletes the call to demo_crash_outer() — the board then carries on instead of
- * crashing. A volatile read is a value it cannot know. In this milestone the next boot
- * reports only the reset reason, with no backtrace — this exists to show exactly what a
- * Zephyr fatal error reads back as, which today is `software` (see README.md, known gaps).
+ * crashing. A volatile read is a value it cannot know. The next boot reports it through
+ * report_crash(), with this chain in its backtrace.
  */
 static volatile uintptr_t demo_crash_address = 0;
 
@@ -172,13 +244,16 @@ int main(void)
     sentry_set_transport(sentry_serial_transport_init(&serial_transport, NULL, 0));
     printk("[sentry] transport: serial relay on the console UART\n");
 
-    report_boot();
+    /* A recovered crash is the more interesting event, and reporting both on the same boot
+     * would double up. */
+    if (!report_crash()) {
+        report_boot();
+    }
 
 #if SENTRY_DEMO_CRASH
     /* Only when this boot did not itself follow a crash, so one power-on produces one
-     * crash-and-report cycle rather than a loop. With this milestone a Zephyr panic reads
-     * back as a software reset, so this guard does not hold yet and the demo loops — power
-     * it off once you have seen what it reports. */
+     * crash-and-report cycle rather than a loop. The fatal-error hook marks its reboot as a
+     * panic, so the boot after the demo crash reads `panic` and stops here. */
     if (!sentry_reset_reason_is_crash(sentry_get_device_info()->reset_reason)) {
         printk("\n[demo] crashing deliberately in 3s ...\n");
         k_sleep(K_SECONDS(3));

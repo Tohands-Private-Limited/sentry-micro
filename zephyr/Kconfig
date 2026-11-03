@@ -5,6 +5,8 @@ menuconfig SENTRY_MICRO
 	select HWINFO
 	select ENTROPY_GENERATOR
 	imply SYS_HEAP_RUNTIME_STATS
+	imply XTENSA_ENABLE_BACKTRACE if XTENSA
+	imply THREAD_NAME
 	help
 	  Report boots and errors to Sentry from a device with no Sentry
 	  knowledge on the far side of its link. HWINFO supplies the reset
@@ -12,6 +14,13 @@ menuconfig SENTRY_MICRO
 	  which must not collide across a fleet. Heap runtime statistics are
 	  what the free-heap numbers on every event are read from; without
 	  them those fields report 0.
+
+	  On Xtensa the crash record's backtrace is walked with the kernel's
+	  own backtrace code, which XTENSA_ENABLE_BACKTRACE compiles; without
+	  it a crash reports the faulting PC only. Thread names are what a
+	  crash reports as the thread that died; without THREAD_NAME that
+	  field is empty. Each costs a little flash, and THREAD_NAME a few
+	  bytes per thread.
 
 if SENTRY_MICRO
 
@@ -23,6 +32,22 @@ config SENTRY_MICRO_TRANSPORT_SERIAL
 	  Deliver envelopes through a host on the other end of a UART, using
 	  the same @SENTRY-RELAY/1 protocol as the Arduino SerialTransport.
 	  Run scripts/serial_relay.py on the host.
+
+config SENTRY_MICRO_FATAL_HANDLER
+	bool "Record fatal errors for the next boot to report"
+	default y
+	help
+	  Provide k_sys_fatal_error_handler(), overriding the kernel's weak
+	  default. It stores the reason, the exception cause, the faulting
+	  PC and a backtrace in memory that survives the reboot, marks the
+	  reset as a panic on Espressif SoCs, and then does exactly what the
+	  default does: reboot with RESET_ON_FATAL_ERROR, halt without it.
+	  sentry_event_attach_coredump() reports the record on the next boot.
+
+	  Only one k_sys_fatal_error_handler() can be linked. An application
+	  that needs its own should say n here and call
+	  sentry_zephyr_record_fatal() (device/zephyr/sentry_coredump_zephyr.h)
+	  first thing from its handler.
 
 config SENTRY_MICRO_SERIAL_TIMEOUT_MS
 	int "How long to wait for the serial relay to answer, in ms"

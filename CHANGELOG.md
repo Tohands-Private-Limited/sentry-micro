@@ -414,6 +414,21 @@
 - Zephyr support, first milestone: a Zephyr module (`zephyr/`) with a device layer, a C serial
   relay transport and `examples/zephyr_basic`, delivering the boot event from an ESP32-S3
   through `scripts/serial_relay.py`, as `sdk.name` `sentry.micro.zephyr` with `os.name`
-  `zephyr`. No crash backtraces, WiFi or offline storage yet. Verified on an ESP32-S3 (N16R8)
+  `zephyr`. No WiFi or offline storage yet. Verified on an ESP32-S3 (N16R8)
   whose only USB is the chip's own: `usb_serial.overlay` puts the console on the
   USB-Serial-JTAG, and the relay now reopens the port after the chip re-enumerates on reset.
+- Zephyr crash path, second milestone: a `k_sys_fatal_error_handler()` (Kconfig
+  `SENTRY_MICRO_FATAL_HANDLER`, default on) records the fatal reason, the Xtensa exception
+  cause, PC, faulting address, thread name and up to 16 frames into `.rtc_noinit`, walking the
+  stack the way Zephyr's own console backtrace does, then reboots or halts exactly as the
+  kernel's default would. On Espressif it also sets the ESP-IDF panic hint, so the next boot
+  reads `panic` rather than `software`. `sentry_coredump_read()` hands the record to
+  `sentry_event_attach_coredump()`, and `examples/zephyr_basic` reports it. Applications with
+  their own handler call `sentry_zephyr_record_fatal()`. Verified on an ESP32-S3: the record
+  survives `esp_restart()`, the next boot reads `panic`, and the six recorded frames are the
+  six Zephyr printed on the console, resolving with `addr2line` to the demo's three crash
+  functions, `main`, and the two kernel entry frames. Frames are unsymbolicated addresses in
+  Sentry for now.
+- The Xtensa EXCCAUSE and RISC-V `mcause` name tables moved from the ESP32 core dump reader
+  into `core/sentry_coredump.c`, shared by both ports and covered by host tests. Same strings,
+  so existing issue titles are unchanged.
