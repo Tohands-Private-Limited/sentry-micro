@@ -89,7 +89,9 @@ typedef struct {
     uint8_t boot_seq;
 } sentry_log_entry_t;
 
-typedef struct {
+/* Tagged, unlike most structs here, so sentry_envelope.h can point an event at a ring
+ * without including this header, which already includes that one. */
+typedef struct sentry_log_ring {
     sentry_log_entry_t entries[SENTRY_MICRO_MAX_LOGS];
     /** Index of the oldest entry. */
     uint8_t head;
@@ -166,6 +168,36 @@ void sentry_log_ring_set_anchor(sentry_log_ring_t *ring, uint64_t unix_us, uint6
 /** Whether this entry was recorded by a boot other than the one the ring is now on. */
 bool sentry_log_entry_is_recovered(const sentry_log_ring_t *ring, const sentry_log_entry_t *entry);
 
+/** How many entries in the ring were recorded by an earlier boot. */
+uint8_t sentry_log_ring_recovered_count(const sentry_log_ring_t *ring);
+
+/**
+ * Remove every entry recorded by an earlier boot (`recovered` true) or every entry recorded
+ * by this one (`recovered` false), keeping the rest in their order.
+ *
+ * The two halves of the breadcrumb rule. While a crash record is waiting to be reported,
+ * the lines recovered from the boot that crashed belong to that report, and this boot's own
+ * lines keep flowing as logs around them: after a log batch of this boot's lines is sent,
+ * only those are removed. Once the report has carried the recovered lines, they are removed
+ * so they are not sent a second time as logs. `dropped` is reset with the current lines,
+ * as sentry_log_ring_clear() resets it, since that is the batch it describes.
+ *
+ * Returns how many entries were removed.
+ */
+uint8_t sentry_log_ring_remove(sentry_log_ring_t *ring, bool recovered);
+
+/**
+ * This entry's wall-clock time in microseconds, or 0 when it cannot be placed.
+ *
+ * `now_uptime_us` and `now_unix_us` are read at the same instant. A line from this boot is
+ * dated by how long before that instant it was recorded. A line recovered from an earlier
+ * boot is dated against the anchor that boot left behind, and at this boot's start when it
+ * left none — see the definition for why that is the honest fallback. 0 when `now_unix_us`
+ * is 0, so a caller can leave the time out rather than send 1970.
+ */
+uint64_t sentry_log_entry_unix_us(const sentry_log_ring_t *ring, const sentry_log_entry_t *entry,
+    uint64_t now_uptime_us, uint64_t now_unix_us);
+
 /**
  * A stable identifier for the on-memory layout of this ring.
  *
@@ -219,6 +251,17 @@ bool sentry_log_ring_empty(const sentry_log_ring_t *ring);
  * metrics — a longer covered interval is still true, unlike a mistimed line.
  */
 size_t sentry_log_envelope_write(char *buf, size_t cap, const sentry_log_ring_t *ring,
+    const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
+    uint64_t now_unix_us);
+
+/**
+ * The same envelope, carrying only the entries this boot recorded.
+ *
+ * What a flush sends while recovered lines are held back for a crash report — see
+ * sentry_log_ring_remove(). Returns 0 when this boot has recorded nothing, as the full
+ * writer does for an empty ring.
+ */
+size_t sentry_log_envelope_write_current(char *buf, size_t cap, const sentry_log_ring_t *ring,
     const char *fallback_trace_id, const char *device_id, uint64_t now_uptime_us,
     uint64_t now_unix_us);
 

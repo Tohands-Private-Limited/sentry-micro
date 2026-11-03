@@ -39,6 +39,15 @@ if(CONFIG_SENTRY_MICRO)
     endif()
   endforeach()
 
+  # Sessions are the one compile-time feature switch exposed as a Kconfig option; logs and
+  # metrics keep their -D form (SENTRY_MICRO_LOGS_ENABLED / SENTRY_MICRO_METRICS_ENABLED).
+  # Library scope, like the definitions above: nothing in the public API depends on it.
+  if(CONFIG_SENTRY_MICRO_SESSIONS)
+    zephyr_library_compile_definitions(SENTRY_MICRO_SESSIONS_ENABLED=1)
+  else()
+    zephyr_library_compile_definitions(SENTRY_MICRO_SESSIONS_ENABLED=0)
+  endif()
+
   # Applications include <sentry_micro.h>, exactly as on Arduino and ESP-IDF.
   zephyr_include_directories(${SENTRY_MICRO_SRC})
 
@@ -54,6 +63,7 @@ if(CONFIG_SENTRY_MICRO)
     ${SENTRY_MICRO_SRC}/core/sentry_log.c
     ${SENTRY_MICRO_SRC}/core/sentry_metrics.c
     ${SENTRY_MICRO_SRC}/core/sentry_relay.c
+    ${SENTRY_MICRO_SRC}/core/sentry_session.c
     ${SENTRY_MICRO_SRC}/core/sentry_span.c
     ${SENTRY_MICRO_SRC}/core/sentry_throttle.c
     ${SENTRY_MICRO_SRC}/core/sentry_trace.c

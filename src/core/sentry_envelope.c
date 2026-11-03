@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "sentry_json.h"
+#include "sentry_log.h"
 
 const char *sentry_level_name(sentry_level_t level)
 {
@@ -94,8 +95,60 @@ bool sentry_debug_id_from_code_id(char *out, const char *code_id_hex)
     return true;
 }
 
-/** Write the event document into `writer`, which may be in counting mode. */
-static void write_event(sentry_json_t *writer, const sentry_event_t *event)
+/** Lines in the event's ring that came from an earlier boot: the breadcrumbs it can carry. */
+static uint8_t breadcrumb_count(const sentry_event_t *event)
+{
+    return event->breadcrumbs ? sentry_log_ring_recovered_count(event->breadcrumbs) : 0;
+}
+
+/**
+ * The trail, oldest first, leaving out the `skip` oldest.
+ *
+ * Recovered lines are the oldest in the ring by construction — every one of them was
+ * recorded before anything this boot wrote — so walking from `head` and skipping the first
+ * `skip` recovered entries drops exactly the lines furthest from the crash.
+ */
+static void write_breadcrumbs(sentry_json_t *writer, const sentry_event_t *event, uint8_t skip)
+{
+    const sentry_log_ring_t *ring = event->breadcrumbs;
+    if (breadcrumb_count(event) <= skip) {
+        return;
+    }
+    sentry_json_key(writer, "breadcrumbs");
+    sentry_json_object_begin(writer);
+    sentry_json_key(writer, "values");
+    sentry_json_array_begin(writer);
+    uint8_t seen = 0;
+    for (uint8_t i = 0; i < ring->count; i++) {
+        const sentry_log_entry_t *entry = &ring->entries[(ring->head + i) % SENTRY_MICRO_MAX_LOGS];
+        if (!entry->used || !sentry_log_entry_is_recovered(ring, entry)) {
+            continue;
+        }
+        if (seen++ < skip) {
+            continue;
+        }
+        sentry_json_object_begin(writer);
+        /* Left out when the line cannot be placed — a device that has not been told the
+         * date. Relay keeps an undated breadcrumb; a 1970 one would sort as decades old. */
+        uint64_t when
+            = sentry_log_entry_unix_us(ring, entry, event->now_uptime_us, event->now_unix_us);
+        if (when > 0) {
+            sentry_json_kv_micros(writer, "timestamp", when);
+        }
+        sentry_json_kv_string(writer, "category", "log");
+        sentry_json_kv_string(writer, "level", sentry_level_name(entry->level));
+        sentry_json_kv_string(writer, "message", entry->body);
+        sentry_json_object_end(writer);
+    }
+    sentry_json_array_end(writer);
+    sentry_json_object_end(writer);
+}
+
+/**
+ * Write the event document into `writer`, which may be in counting mode, leaving out the
+ * `crumbs_skip` oldest breadcrumbs.
+ */
+static void write_event(sentry_json_t *writer, const sentry_event_t *event, uint8_t crumbs_skip)
 {
     const sentry_device_info_t *device = event->device;
 
@@ -172,6 +225,13 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
          */
         sentry_json_kv_string(
             writer, "backtrace", event->coredump->truncated ? "truncated" : "complete");
+    }
+    if (crumbs_skip > 0 && breadcrumb_count(event) > 0) {
+        /* A tag for the same reason as `backtrace` above: a shortened trail looks like a
+         * complete one that simply started later, unless something says otherwise. */
+        char dropped[4];
+        snprintf(dropped, sizeof(dropped), "%u", (unsigned)crumbs_skip);
+        sentry_json_kv_string(writer, "breadcrumbs_dropped", dropped);
     }
     sentry_json_object_end(writer);
 
@@ -349,6 +409,8 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_object_end(writer); /* exception */
     }
 
+    write_breadcrumbs(writer, event, crumbs_skip);
+
     /* The join to the uploaded debug files. Without this block Sentry has no way to know
      * which build the addresses in this event came from, and they stay hex forever. */
     if (event->build_id && event->build_id[0]) {
@@ -392,6 +454,28 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
     sentry_json_object_end(writer); /* event */
 }
 
+/** The event document's length with the `crumbs_skip` oldest breadcrumbs left out. */
+static size_t event_len(const sentry_event_t *event, uint8_t crumbs_skip)
+{
+    sentry_json_t counter;
+    sentry_json_init(&counter, NULL, 0);
+    write_event(&counter, event, crumbs_skip);
+    return counter.len;
+}
+
+static size_t event_write(char *buf, size_t cap, const sentry_event_t *event, uint8_t crumbs_skip)
+{
+    sentry_json_t writer;
+    sentry_json_init(&writer, buf, cap);
+    write_event(&writer, event, crumbs_skip);
+
+    if (buf && writer.overflow) {
+        /* Never hand back a truncated document that looks like JSON. */
+        buf[0] = '\0';
+    }
+    return writer.len;
+}
+
 size_t sentry_event_write(char *buf, size_t cap, const sentry_event_t *event)
 {
     if (!event || !event->event_id) {
@@ -401,15 +485,14 @@ size_t sentry_event_write(char *buf, size_t cap, const sentry_event_t *event)
         return 0;
     }
 
-    sentry_json_t writer;
-    sentry_json_init(&writer, buf, cap);
-    write_event(&writer, event);
-
-    if (buf && writer.overflow) {
-        /* Never hand back a truncated document that looks like JSON. */
-        buf[0] = '\0';
+    /* Measure, and drop the oldest breadcrumb until the rest fit. At most one pass per
+     * breadcrumb — six at the default ring size — each a counting pass with no copying. */
+    uint8_t skip = 0;
+    uint8_t crumbs = breadcrumb_count(event);
+    while (buf && skip < crumbs && event_len(event, skip) + 1 > cap) {
+        skip++;
     }
-    return writer.len;
+    return event_write(buf, cap, event, skip);
 }
 
 /** Write the transaction document into `writer`, which may be in counting mode. */
@@ -561,22 +644,36 @@ size_t sentry_envelope_write(char *buf, size_t cap, const sentry_event_t *event)
 
     /* The item header has to state the payload length, and the payload comes after it — so
      * measure first with a counting pass. That costs one extra formatting pass and saves a
-     * second buffer, which is the right trade when the buffer is the scarce thing. */
-    size_t payload_len = sentry_event_write(NULL, 0, event);
-
+     * second buffer, which is the right trade when the buffer is the scarce thing.
+     *
+     * Breadcrumbs make the measuring a loop: when the whole envelope would not fit, the
+     * oldest breadcrumb is left out and the event measured again, until it fits or there are
+     * none left to leave out. Only the trail is ever shortened this way — the exception and
+     * its frames are the report, the breadcrumbs are context for it. */
+    uint8_t skip = 0;
+    uint8_t crumbs = breadcrumb_count(event);
+    size_t payload_len;
     char header[128];
-    int header_len = snprintf(header, sizeof(header),
-        "{\"event_id\":\"%s\"}\n{\"type\":\"event\",\"length\":%u}\n", event->event_id,
-        (unsigned)payload_len);
-    if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
-        if (buf && cap > 0) {
-            buf[0] = '\0';
+    int header_len;
+    size_t total;
+    for (;;) {
+        payload_len = event_len(event, skip);
+        header_len = snprintf(header, sizeof(header),
+            "{\"event_id\":\"%s\"}\n{\"type\":\"event\",\"length\":%u}\n", event->event_id,
+            (unsigned)payload_len);
+        if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
+            if (buf && cap > 0) {
+                buf[0] = '\0';
+            }
+            return 0;
         }
-        return 0;
+        /* header + payload + the newline that terminates the item. */
+        total = (size_t)header_len + payload_len + 1;
+        if (!buf || total + 1 <= cap || skip >= crumbs) {
+            break;
+        }
+        skip++;
     }
-
-    /* header + payload + the newline that terminates the item. */
-    size_t total = (size_t)header_len + payload_len + 1;
 
     if (!buf) {
         return total;
@@ -588,7 +685,7 @@ size_t sentry_envelope_write(char *buf, size_t cap, const sentry_event_t *event)
 
     memcpy(buf, header, (size_t)header_len);
     /* Write the payload straight after the header; the length is already known to fit. */
-    sentry_event_write(buf + header_len, cap - (size_t)header_len, event);
+    event_write(buf + header_len, cap - (size_t)header_len, event, skip);
     buf[header_len + payload_len] = '\n';
     buf[total] = '\0';
     return total;

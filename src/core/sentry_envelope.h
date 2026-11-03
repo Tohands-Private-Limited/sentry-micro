@@ -23,6 +23,10 @@
 extern "C" {
 #endif
 
+/* Defined in sentry_log.h, which includes this header for sentry_level_t; named here only
+ * so an event can point at one. */
+struct sentry_log_ring;
+
 /** Length of an event id string: 32 hex characters plus the terminator. */
 #define SENTRY_MICRO_EVENT_ID_LEN 33
 
@@ -146,13 +150,38 @@ typedef struct {
     uint32_t free_heap_bytes;
     uint32_t min_free_heap_bytes;
     uint64_t uptime_ms;
+
+    /**
+     * A log ring whose lines recovered from an earlier boot become this event's breadcrumbs,
+     * or NULL. Optional.
+     *
+     * Set by `sentry_event_attach_coredump()`: the lines the device printed just before it
+     * crashed are the closest thing a microcontroller has to the trail a desktop SDK keeps,
+     * and they are already in memory that survived the reset. Only recovered lines are
+     * used — this boot's own lines did not lead up to the crash — oldest first, as Sentry
+     * renders them.
+     *
+     * When they do not all fit the buffer the envelope is written into, the oldest are left
+     * out until the rest do, and the event carries a `breadcrumbs_dropped` tag with how many.
+     * The lines nearest the crash are the ones worth keeping.
+     */
+    const struct sentry_log_ring *breadcrumbs;
+    /**
+     * Both clocks read at one instant, which is what a recovered line is dated against; see
+     * `sentry_log_entry_unix_us()`. `now_unix_us` 0 leaves the breadcrumbs undated rather
+     * than dated 1970.
+     */
+    uint64_t now_uptime_us;
+    uint64_t now_unix_us;
 } sentry_event_t;
 
 /**
  * Write the event JSON.
  *
  * Pass `buf = NULL` to compute the length without writing — which is how the envelope
- * builder learns the payload size for the item header without needing a second buffer.
+ * builder learns the payload size for the item header without needing a second buffer. That
+ * length includes every breadcrumb; with a buffer, the oldest are left out until the event
+ * fits `cap`, as described at `sentry_event_t::breadcrumbs`.
  *
  * Returns the number of bytes the document needs, excluding the NUL. If that is >= `cap`,
  * nothing usable was written; retry with a larger buffer.
@@ -165,6 +194,9 @@ size_t sentry_event_write(char *buf, size_t cap, const sentry_event_t *event);
  *     {"event_id":"..."}\n
  *     {"type":"event","length":N}\n
  *     {...event...}\n
+ *
+ * With a buffer, breadcrumbs that would not fit `cap` are left out oldest first, as for
+ * `sentry_event_write()`; the item length always matches what was written.
  *
  * Returns the number of bytes needed, excluding the NUL. If that is >= `cap`, nothing
  * usable was written.

@@ -665,6 +665,125 @@ static void test_null_is_safe(void)
     TEST_ASSERT_TRUE(sentry_log_ring_empty(&r));
 }
 
+/* ── Crash breadcrumbs: holding recovered lines back ──────────────────────── */
+
+/** Two lines from a boot that crashed, then `current` lines from this one. */
+static void ring_after_a_crash(sentry_log_ring_t *r, int current)
+{
+    char body[16];
+    sentry_log_ring_reset(r);
+    sentry_log_ring_push(r, SENTRY_LEVEL_INFO, TRACE, 1000, "old-0", false);
+    sentry_log_ring_push(r, SENTRY_LEVEL_ERROR, TRACE, 2000, "old-1", false);
+    sentry_log_ring_begin_boot(r);
+    for (int i = 0; i < current; i++) {
+        snprintf(body, sizeof(body), "new-%d", i);
+        sentry_log_ring_push(r, SENTRY_LEVEL_INFO, "", (uint64_t)(i + 1) * 1000, body, false);
+    }
+}
+
+static void test_recovered_lines_are_counted(void)
+{
+    sentry_log_ring_t r;
+    ring_after_a_crash(&r, 3);
+    TEST_ASSERT_EQUAL_UINT(2, sentry_log_ring_recovered_count(&r));
+    TEST_ASSERT_EQUAL_UINT(0, sentry_log_ring_recovered_count(NULL));
+}
+
+static void test_the_current_writer_holds_recovered_lines_back(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    ring_after_a_crash(&r, 2);
+
+    size_t len = sentry_log_envelope_write_current(
+        buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID, 10000, NOW_UNIX_US);
+    TEST_ASSERT_TRUE(len > 0 && len < sizeof(buf));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"item_count\":2,"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"new-0\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"new-1\""));
+    TEST_ASSERT_NULL(strstr(buf, "old-"));
+
+    /* The full writer, for comparison, carries all four. */
+    sentry_log_envelope_write(buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID, 10000, NOW_UNIX_US);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"item_count\":4,"));
+}
+
+static void test_the_current_writer_has_nothing_to_send_for_recovered_lines_alone(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    ring_after_a_crash(&r, 0);
+    TEST_ASSERT_FALSE(sentry_log_ring_empty(&r));
+    TEST_ASSERT_EQUAL_size_t(0,
+        sentry_log_envelope_write_current(
+            buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID, 10000, NOW_UNIX_US));
+}
+
+static void test_removing_sent_lines_keeps_the_held_ones_in_order(void)
+{
+    sentry_log_ring_t r;
+    ring_after_a_crash(&r, 3);
+    r.dropped = 4;
+
+    TEST_ASSERT_EQUAL_UINT(3, sentry_log_ring_remove(&r, false));
+    TEST_ASSERT_EQUAL_UINT(2, r.count);
+    TEST_ASSERT_EQUAL_UINT(0, r.dropped);
+    TEST_ASSERT_EQUAL_STRING("old-0", r.entries[r.head].body);
+    TEST_ASSERT_EQUAL_STRING("old-1", r.entries[(r.head + 1) % SENTRY_MICRO_MAX_LOGS].body);
+    TEST_ASSERT_EQUAL_UINT(2, sentry_log_ring_recovered_count(&r));
+
+    /* A line recorded afterwards lands after them, as a ring append always does. */
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, "", 9000, "later", false);
+    TEST_ASSERT_EQUAL_STRING("later", r.entries[(r.head + 2) % SENTRY_MICRO_MAX_LOGS].body);
+}
+
+static void test_dropping_recovered_lines_keeps_this_boots_in_order(void)
+{
+    sentry_log_ring_t r;
+    ring_after_a_crash(&r, 3);
+
+    TEST_ASSERT_EQUAL_UINT(2, sentry_log_ring_remove(&r, true));
+    TEST_ASSERT_EQUAL_UINT(3, r.count);
+    TEST_ASSERT_EQUAL_UINT(0, sentry_log_ring_recovered_count(&r));
+    for (uint8_t i = 0; i < r.count; i++) {
+        char expected[16];
+        snprintf(expected, sizeof(expected), "new-%u", (unsigned)i);
+        TEST_ASSERT_EQUAL_STRING(expected, r.entries[(r.head + i) % SENTRY_MICRO_MAX_LOGS].body);
+    }
+}
+
+static void test_removing_works_across_the_wrap(void)
+{
+    /* Two recovered lines, then enough of this boot's to evict one of them and wrap the
+     * ring, so the run from head crosses the end of the array. */
+    sentry_log_ring_t r;
+    ring_after_a_crash(&r, SENTRY_MICRO_MAX_LOGS - 1);
+    TEST_ASSERT_EQUAL_UINT(SENTRY_MICRO_MAX_LOGS, r.count);
+    TEST_ASSERT_TRUE(r.head != 0);
+    TEST_ASSERT_EQUAL_STRING("old-1", r.entries[r.head].body);
+
+    TEST_ASSERT_EQUAL_UINT(1, sentry_log_ring_remove(&r, true));
+    TEST_ASSERT_EQUAL_UINT(SENTRY_MICRO_MAX_LOGS - 1, r.count);
+    for (uint8_t i = 0; i < r.count; i++) {
+        char expected[16];
+        snprintf(expected, sizeof(expected), "new-%u", (unsigned)i);
+        TEST_ASSERT_EQUAL_STRING(expected, r.entries[(r.head + i) % SENTRY_MICRO_MAX_LOGS].body);
+    }
+    /* What was vacated is zeroed, so nothing stale reads back as a line. */
+    TEST_ASSERT_FALSE(r.entries[(r.head + r.count) % SENTRY_MICRO_MAX_LOGS].used);
+}
+
+static void test_an_entry_has_no_date_without_a_clock(void)
+{
+    sentry_log_ring_t r;
+    ring_after_a_crash(&r, 1);
+    for (uint8_t i = 0; i < r.count; i++) {
+        TEST_ASSERT_EQUAL_UINT64(0,
+            sentry_log_entry_unix_us(
+                &r, &r.entries[(r.head + i) % SENTRY_MICRO_MAX_LOGS], 5000, 0));
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -698,5 +817,12 @@ int main(void)
     RUN_TEST(test_attributes_is_omitted_when_nothing_applies);
     RUN_TEST(test_the_t7d_attribute_reflects_what_actually_happened);
     RUN_TEST(test_null_is_safe);
+    RUN_TEST(test_recovered_lines_are_counted);
+    RUN_TEST(test_the_current_writer_holds_recovered_lines_back);
+    RUN_TEST(test_the_current_writer_has_nothing_to_send_for_recovered_lines_alone);
+    RUN_TEST(test_removing_sent_lines_keeps_the_held_ones_in_order);
+    RUN_TEST(test_dropping_recovered_lines_keeps_this_boots_in_order);
+    RUN_TEST(test_removing_works_across_the_wrap);
+    RUN_TEST(test_an_entry_has_no_date_without_a_clock);
     return UNITY_END();
 }

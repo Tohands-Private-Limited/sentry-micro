@@ -230,6 +230,11 @@ Written and tested, never actually run on hardware — check before trusting:
 - **The Zephyr WiFi transport's memory sizing.** 60 KB of mbedTLS heap and a 16 KB main
   stack are the figures the handshake was first run with, not measured minimums; nobody has
   yet trimmed them with the thread analyzer and heap statistics.
+- **Sessions and crash breadcrumbs on Arduino.** Host-tested and built for all five variants,
+  but run on a board only under Zephyr (see the verified list below). Two limits are by design:
+  a power cycle clears the retained block, so the boot before it is never closed and counts
+  as healthy; and a boot that ran more than five days has a `started` Relay considers too old,
+  so its close is dropped.
 - **The Action's upload path.** CI exercises it on every PR in build-only mode — fixpoint
   build, stamp, and the `sentry-cli` readback that proves the stamp landed — but no run has
   yet uploaded to Sentry from CI, because the repository has no `SENTRY_AUTH_TOKEN` secret.
@@ -246,6 +251,11 @@ chip's native USB, and again over WiFi):
   functions, `main`, and the kernel's two entry frames. With the ELF copy that
   `zephyr_release.py` uploads, the same crash renders symbolicated in the Sentry UI: all six
   frames named with file, line and source context.
+- **Sessions and breadcrumbs, two boots over WiFi.** Boot one sent its session start right
+  after SNTP; the demo crashed; boot two sent the previous session's `crashed` close, its own
+  start, and the crash event carrying the two console lines the crashed boot had logged, dated
+  three seconds apart from that boot's clock. Sentry's release health for that release then
+  read two sessions, one crashed, crash-free 50 percent, one user (the device id).
 - **The WiFi transport delivers, with the certificate checked.** The board joins a 2.4 GHz
   network, sets its clock over SNTP, and both the boot event and a recovered crash report
   POST straight to ingest over TLS 1.2 with `TLS_PEER_VERIFY_REQUIRED` against the bundled

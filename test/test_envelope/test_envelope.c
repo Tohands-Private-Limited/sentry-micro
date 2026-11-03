@@ -13,6 +13,7 @@
 #include "sentry_base64.h"
 #include "sentry_envelope.h"
 #include "sentry_json.h"
+#include "sentry_log.h"
 
 void setUp(void) { }
 void tearDown(void) { }
@@ -731,6 +732,212 @@ static void test_a_trace_without_a_replay_omits_only_the_replay(void)
     TEST_ASSERT_NULL(strstr(buf, "\"replay\""));
 }
 
+/* ── breadcrumbs ──────────────────────────────────────────────────────────── */
+
+/* 2026-11-03T10:00:00Z, in microseconds. */
+#define CRUMB_NOW_US 1793700000000000ULL
+
+/**
+ * A ring as the boot after a crash finds it: `recovered` lines written by the boot that
+ * crashed, which had the clock anchored 1 s in, then `current` lines written by this one.
+ */
+static void crashed_ring(sentry_log_ring_t *ring, int recovered, int current, size_t body_len)
+{
+    char body[SENTRY_MICRO_LOG_BODY_LEN];
+    sentry_log_ring_reset(ring);
+    sentry_log_ring_set_anchor(ring, CRUMB_NOW_US - 60000000ULL, 1000000ULL);
+    for (int i = 0; i < recovered; i++) {
+        /* Numbered and then padded with 'x' to body_len, so each is findable and the sizes
+         * are the worst case the ring can hold. */
+        snprintf(body, sizeof(body), "before-%d ", i);
+        size_t n = strlen(body);
+        while (n < body_len && n < sizeof(body) - 1) {
+            body[n++] = 'x';
+        }
+        body[n] = '\0';
+        sentry_log_ring_push(ring, i == recovered - 1 ? SENTRY_LEVEL_WARNING : SENTRY_LEVEL_INFO,
+            "", 2000000ULL + (uint64_t)i * 1000000ULL, body, false);
+    }
+    sentry_log_ring_begin_boot(ring);
+    for (int i = 0; i < current; i++) {
+        snprintf(body, sizeof(body), "after-%d", i);
+        sentry_log_ring_push(ring, SENTRY_LEVEL_INFO, "", 500000ULL, body, false);
+    }
+}
+
+/** The six-frame crash the Zephyr sample reports, built and released as scripts do it. */
+static sentry_event_t zephyr_crash_event(
+    const sentry_device_info_t *device, const sentry_coredump_t *crash)
+{
+    sentry_event_t event = sample_event(device);
+    event.level = SENTRY_LEVEL_FATAL;
+    event.message = "StoreProhibited in thread main";
+    event.board = "esp32s3_devkitc";
+    event.build_id = "4978b44454c7d2c87b9a58d5bfed23f3e1d4e831";
+    event.image_addr = 0x40370000;
+    event.image_size = 0x21f2c8c;
+    event.image_name = "zephyr_basic-esp32s3.elf";
+    event.timestamp = CRUMB_NOW_US / 1000000ULL;
+    event.coredump = crash;
+    event.now_uptime_us = 8000000ULL;
+    event.now_unix_us = CRUMB_NOW_US;
+    return event;
+}
+
+static sentry_coredump_t six_frame_crash(void)
+{
+    sentry_coredump_t crash = sample_coredump();
+    snprintf(crash.task_name, sizeof(crash.task_name), "main");
+    crash.frames[0] = 0x42009a3d;
+    crash.frames[1] = 0x42009a4c;
+    crash.frames[2] = 0x42009a58;
+    crash.frames[3] = 0x42009c6e;
+    crash.frames[4] = 0x4201a3c1;
+    crash.frames[5] = 0x40379b2d;
+    crash.frame_count = 6;
+    return crash;
+}
+
+static void test_recovered_lines_become_breadcrumbs(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = six_frame_crash();
+    sentry_event_t event = zephyr_crash_event(&device, &crash);
+    sentry_log_ring_t ring;
+    crashed_ring(&ring, 2, 1, 0);
+    event.breadcrumbs = &ring;
+
+    char buf[3072];
+    size_t len = sentry_envelope_write(buf, sizeof(buf), &event);
+    TEST_ASSERT_TRUE(len > 0 && len < sizeof(buf));
+
+    const char *crumbs = strstr(buf, "\"breadcrumbs\":{\"values\":[");
+    TEST_ASSERT_NOT_NULL(crumbs);
+    /* Oldest first, dated against the crashed boot's anchor: recorded 2 s and 3 s into a boot
+     * whose clock read CRUMB_NOW - 60 s at 1 s in. */
+    const char *first = strstr(crumbs,
+        "{\"timestamp\":1793699941.000000,\"category\":\"log\",\"level\":\"info\","
+        "\"message\":\"before-0 \"}");
+    const char *second = strstr(crumbs,
+        "{\"timestamp\":1793699942.000000,\"category\":\"log\",\"level\":\"warning\","
+        "\"message\":\"before-1 \"}");
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_NOT_NULL(second);
+    TEST_ASSERT_TRUE(first < second);
+    /* This boot's own line did not lead up to the crash. */
+    TEST_ASSERT_NULL(strstr(buf, "after-0"));
+    TEST_ASSERT_NULL(strstr(buf, "breadcrumbs_dropped"));
+}
+
+static void test_breadcrumbs_without_a_clock_are_undated(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = six_frame_crash();
+    sentry_event_t event = zephyr_crash_event(&device, &crash);
+    sentry_log_ring_t ring;
+    crashed_ring(&ring, 1, 0, 0);
+    event.breadcrumbs = &ring;
+    event.now_unix_us = 0;
+
+    char buf[3072];
+    sentry_envelope_write(buf, sizeof(buf), &event);
+    TEST_ASSERT_NOT_NULL(strstr(buf,
+        "\"breadcrumbs\":{\"values\":[{\"category\":\"log\",\"level\":\"warning\","
+        "\"message\":\"before-0 \"}]}"));
+}
+
+static void test_a_ring_with_nothing_recovered_adds_no_breadcrumbs(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = six_frame_crash();
+    sentry_event_t event = zephyr_crash_event(&device, &crash);
+    sentry_log_ring_t ring;
+    crashed_ring(&ring, 0, 3, 0);
+    event.breadcrumbs = &ring;
+
+    char buf[3072];
+    sentry_envelope_write(buf, sizeof(buf), &event);
+    TEST_ASSERT_NULL(strstr(buf, "\"breadcrumbs\""));
+}
+
+/**
+ * The budget, measured rather than estimated: the six-frame crash with a full ring of
+ * maximum-length lines from the boot that crashed, into the 2,048-byte buffer every caller
+ * in this repository uses. What does not fit is the oldest lines, and the event says so.
+ */
+static void test_the_oldest_breadcrumbs_give_way_to_fit_the_buffer(void)
+{
+    sentry_device_info_t device = sample_device();
+    snprintf(device.chip_model, sizeof(device.chip_model), "ESP32-S3");
+    snprintf(device.device_id, sizeof(device.device_id), "dcb4d92a7d94");
+    snprintf(device.sdk_version, sizeof(device.sdk_version), "4.3.99");
+    device.reset_reason = SENTRY_RESET_PANIC;
+    sentry_coredump_t crash = six_frame_crash();
+    sentry_event_t event = zephyr_crash_event(&device, &crash);
+
+    char buf[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t bare = sentry_envelope_write(buf, sizeof(buf), &event);
+
+    sentry_log_ring_t ring;
+    crashed_ring(&ring, SENTRY_MICRO_MAX_LOGS, 0, SENTRY_MICRO_LOG_BODY_LEN - 1);
+    event.breadcrumbs = &ring;
+    size_t all = sentry_envelope_write(NULL, 0, &event);
+    size_t len = sentry_envelope_write(buf, sizeof(buf), &event);
+
+    printf("crash envelope: %u bytes bare, %u with all %u breadcrumbs, %u written into %u\n",
+        (unsigned)bare, (unsigned)all, (unsigned)SENTRY_MICRO_MAX_LOGS, (unsigned)len,
+        (unsigned)sizeof(buf));
+    printf("%s", buf);
+
+    TEST_ASSERT_TRUE(all >= sizeof(buf));
+    TEST_ASSERT_TRUE(len > 0 && len < sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(strlen(buf), len);
+
+    /* The newest line survives and the oldest gave way. */
+    TEST_ASSERT_NULL(strstr(buf, "before-0 "));
+    char newest[16];
+    snprintf(newest, sizeof(newest), "before-%d ", SENTRY_MICRO_MAX_LOGS - 1);
+    TEST_ASSERT_NOT_NULL(strstr(buf, newest));
+
+    /* The count in the tag matches what is missing. */
+    int kept = 0;
+    for (const char *p = buf; (p = strstr(p, "\"category\":\"log\"")) != NULL; p++) {
+        kept++;
+    }
+    char tag[48];
+    snprintf(tag, sizeof(tag), "\"breadcrumbs_dropped\":\"%d\"", SENTRY_MICRO_MAX_LOGS - kept);
+    TEST_ASSERT_NOT_NULL(strstr(buf, tag));
+    TEST_ASSERT_TRUE(kept > 0);
+
+    /* And the item header still states the payload exactly. */
+    unsigned stated = 0;
+    const char *length_at = strstr(buf, "\"length\":");
+    TEST_ASSERT_EQUAL_INT(1, sscanf(length_at, "\"length\":%u", &stated));
+    const char *payload = strchr(length_at, '\n') + 1;
+    TEST_ASSERT_EQUAL_size_t(stated, strlen(payload) - 1);
+}
+
+static void test_an_event_too_small_for_any_breadcrumb_keeps_the_crash(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = six_frame_crash();
+    sentry_event_t event = zephyr_crash_event(&device, &crash);
+    sentry_log_ring_t ring;
+    crashed_ring(&ring, 2, 0, 40);
+    event.breadcrumbs = &ring;
+
+    /* Room for the crash and the tag, and not one line more. */
+    event.breadcrumbs = NULL;
+    size_t bare = sentry_event_write(NULL, 0, &event);
+    event.breadcrumbs = &ring;
+    char buf[3072];
+    size_t len = sentry_event_write(buf, bare + 32, &event);
+    TEST_ASSERT_TRUE(len < bare + 32);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"exception\""));
+    TEST_ASSERT_NULL(strstr(buf, "\"breadcrumbs\":"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"breadcrumbs_dropped\":\"2\""));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -767,5 +974,10 @@ int main(void)
     RUN_TEST(test_an_event_in_a_trace_carries_it);
     RUN_TEST(test_an_event_outside_a_trace_omits_both_contexts);
     RUN_TEST(test_a_trace_without_a_replay_omits_only_the_replay);
+    RUN_TEST(test_recovered_lines_become_breadcrumbs);
+    RUN_TEST(test_breadcrumbs_without_a_clock_are_undated);
+    RUN_TEST(test_a_ring_with_nothing_recovered_adds_no_breadcrumbs);
+    RUN_TEST(test_the_oldest_breadcrumbs_give_way_to_fit_the_buffer);
+    RUN_TEST(test_an_event_too_small_for_any_breadcrumb_keeps_the_crash);
     return UNITY_END();
 }

@@ -4,6 +4,26 @@
 
 ### Various fixes & improvements
 
+- Sessions for release health (`core/sentry_session.*`). One boot is one session: it opens in
+  `sentry_init()` and the next boot closes it from its reset reason, `crashed` after a panic,
+  a watchdog or a brownout and `exited` after anything else. `sentry_flush()` sends the close
+  and the new boot's start once the device knows the date, which Relay requires; the
+  serial-only Zephyr build therefore never sends them. Error and fatal captures count against
+  the running session; a recovered crash does not count again on the boot that reports it.
+  `SENTRY_MICRO_SESSIONS_ENABLED=0`, or `CONFIG_SENTRY_MICRO_SESSIONS=n` on Zephyr, compiles
+  them out. Both examples flush right after their clock sync so the boot is counted at once.
+  Verified on an ESP32-S3 over WiFi across a crash: release health showed two sessions, one
+  crashed, one user.
+- Breadcrumbs on the crash event. The log lines the crashed boot recorded and never sent ride
+  its crash report as `breadcrumbs`, oldest first and dated against that boot's clock, and are
+  then discarded rather than also sent as logs; the oldest give way when the envelope buffer
+  is full, and the event says how many in a `breadcrumbs_dropped` tag. The log anchor is now
+  recorded on every flush rather than only when lines are waiting, so lines written just
+  before a crash can still be dated. Verified on the same run: the crash event in Sentry
+  carries the two lines, three seconds apart.
+- The memory that survives a reset now holds the log ring and the 104-byte session record
+  together (960 of its 1,024 bytes). Its layout id changed, so the first boot of this firmware
+  after an update starts with an empty ring and no session to close.
 - The ESP-IDF and Arduino sources moved under `src/platform/`, beside the Zephyr port, and the
   chip model and revision now come from `device/espressif/` on ESP-IDF too. Include paths
   changed for downstream code that copied these headers: `device/sentry_device.h` is now
