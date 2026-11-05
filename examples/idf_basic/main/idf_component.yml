@@ -1,0 +1,5 @@
+# sentry-micro from this repository's root, by path, so the example always builds against the
+# checkout it sits in. An application elsewhere points `path` at its own copy instead.
+dependencies:
+  sentry-micro:
+    path: ../../..

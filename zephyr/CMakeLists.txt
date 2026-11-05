@@ -105,6 +105,6 @@ if(CONFIG_SENTRY_MICRO)
   # and a build with no networking must still link.
   zephyr_library_sources_ifdef(CONFIG_SENTRY_MICRO_TRANSPORT_WIFI
     ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_transport_wifi.c
-    ${SENTRY_MICRO_SRC}/transport/zephyr/sentry_ca_digicert_global_root_g2.c
+    ${SENTRY_MICRO_SRC}/transport/sentry_ca_digicert_global_root_g2.c
   )
 endif()

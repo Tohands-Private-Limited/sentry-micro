@@ -1,5 +1,5 @@
 /*
- * DigiCert Global Root G2, the root the WiFi transport trusts by default.
+ * DigiCert Global Root G2, the root the Zephyr and ESP-IDF WiFi transports trust by default.
  *
  * Why this one: Sentry's ingest certificate (CN=ingest.sentry.io, RSA 2048, signed
  * sha256WithRSAEncryption) is issued by "DigiCert Global G2 TLS RSA SHA256 2020 CA1", and that
@@ -23,12 +23,18 @@
  * every handshake fail on every device still carrying this copy, which is why an application
  * can pass its own CA to sentry_wifi_transport_init() and ship a new one with its next update.
  *
- * PEM rather than DER so that it can be compared with the published certificate by eye; it
- * needs CONFIG_MBEDTLS_PEM_PARSE_C. Wrapped whole for the same reason as the transport itself.
+ * PEM rather than DER so that it can be compared with the published certificate by eye; on
+ * Zephyr it needs CONFIG_MBEDTLS_PEM_PARSE_C, which ESP-IDF's mbedTLS always has.
+ *
+ * One copy for both ports, so the bytes the two trust cannot drift apart. Wrapped whole,
+ * because PlatformIO compiles every source under src/ for the Arduino builds as well, where
+ * ESP_PLATFORM is defined too: there it is an empty translation unit, since the Arduino
+ * WiFiTransport takes its CA from set_ca_cert() instead. Each port compiles it only with its
+ * WiFi transport (zephyr/CMakeLists.txt, the root CMakeLists.txt).
  */
-#if defined(__ZEPHYR__)
+#if defined(__ZEPHYR__) || (defined(ESP_PLATFORM) && !defined(ARDUINO))
 
-#    include "sentry_transport_wifi.h"
+#    include "sentry_ca_digicert_global_root_g2.h"
 
 /* The NUL terminator is part of the credential: mbedTLS's PEM parser requires it. */
 const char sentry_ca_digicert_global_root_g2[]
@@ -55,4 +61,4 @@ const char sentry_ca_digicert_global_root_g2[]
       "MrY=\n"
       "-----END CERTIFICATE-----\n";
 
-#endif /* __ZEPHYR__ */
+#endif /* __ZEPHYR__ || (ESP_PLATFORM && !ARDUINO) */

@@ -489,3 +489,29 @@
   and Zephyr's ESP32-S3 ELF lists RTC memory first. Verified end to end on an ESP32-S3: the
   crash from the flashed image renders in the Sentry UI with all six frames resolved to
   function, file and line.
+- ESP-IDF component, first milestone: the repository root is an ESP-IDF component
+  (`idf_component.yml`, `CMakeLists.txt`, `Kconfig`) that builds the portable core, the
+  ESP-IDF platform files and the Espressif SoC hooks, with every source listed by name as on
+  Zephyr. Its Kconfig uses the Zephyr module's option names; `CONFIG_SENTRY_MICRO_SESSIONS=n`
+  compiles sessions out, and the `SENTRY_MICRO_BUILD_ID` / `_IMAGE_ADDR` / `_IMAGE_SIZE` /
+  `_IMAGE_NAME` environment variables are read the same way. A C transport,
+  `transport/esp-idf/sentry_transport_wifi.h`, posts to ingest through `esp_http_client`
+  with the Zephyr transport's names and behaviour: only the DSN's host (or one the application
+  names), plain http refused otherwise, `Retry-After` / `X-Sentry-Rate-Limits` honoured, "no
+  route" until the default network interface has an address. It trusts the bundled DigiCert
+  Global Root G2 by default, or ESP-IDF's certificate bundle with
+  `CONFIG_SENTRY_MICRO_WIFI_TLS_CRT_BUNDLE`. `examples/idf_basic` is the plain-C application:
+  WiFi, SNTP, sessions, a boot event or a recovered crash, and a demo crash switch. Verified
+  on an ESP32-S3 with ESP-IDF v6.1: the boot event and both session updates reached ingest
+  over TLS with the certificate checked, HTTP 200. The crash path builds but has not been run
+  on this port. Events report `sdk.name` `sentry.micro.esp32`, as on Arduino.
+- The ESP-IDF core dump reader no longer compiles itself out under ESP-IDF 6.x. It required
+  `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF`, which 6.x selects but never defines; from 6.0 on it
+  needs only `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, and the build stops if core dumps are on
+  and neither destination symbol exists. Builds on the Arduino cores (ESP-IDF 4.4 and 5.5)
+  check the same two symbols as before.
+- The DigiCert Global Root G2 moved to `src/transport/sentry_ca_digicert_global_root_g2.c`,
+  with a header of its own, shared by the Zephyr and ESP-IDF transports. Same bytes.
+- `sentry_http_response_for_status()` in `core/sentry_http.c` maps an HTTP status and the two
+  back-off headers to a `sentry_response_t`, the table the Zephyr transport applies inline,
+  now host-tested. The ESP-IDF transport uses it.

@@ -6,6 +6,9 @@
  * everyone; read too long and a device sits on a crash report for a day. Both the Arduino
  * and the Zephyr WiFi transports call these, so pinning them here pins both.
  *
+ * `sentry_http_response_for_status()` is the ESP-IDF transport's status-to-result mapping, the
+ * same table the Zephyr transport applies inline.
+ *
  * The response-head parser is the Zephyr transport's alone (Arduino's HTTPClient has its
  * own), and is tested here because it cannot be on a board: what a socket read happens to
  * split, and where, is not something a test against a live server can choose.
@@ -221,6 +224,65 @@ static void test_head_does_not_take_a_prefix_for_a_header(void)
     TEST_ASSERT_EQUAL_UINT32(0u, head.retry_after_ms);
 }
 
+static void test_status_2xx_is_ok_and_drops_any_back_off(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(200, 5000u, 7000u);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_OK, r.result);
+    TEST_ASSERT_EQUAL_UINT16(200, r.http_status);
+    TEST_ASSERT_EQUAL_UINT32(0u, r.retry_after_ms);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_OK, sentry_http_response_for_status(204, 0, 0).result);
+}
+
+static void test_status_429_prefers_retry_after_over_rate_limits(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(429, 60000u, 30000u);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_RATE_LIMITED, r.result);
+    TEST_ASSERT_EQUAL_UINT16(429, r.http_status);
+    TEST_ASSERT_EQUAL_UINT32(60000u, r.retry_after_ms);
+}
+
+static void test_status_429_falls_back_to_rate_limits(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(429, 0, 30000u);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_RATE_LIMITED, r.result);
+    TEST_ASSERT_EQUAL_UINT32(30000u, r.retry_after_ms);
+    /* Neither stated: the core falls back to its own backoff. */
+    TEST_ASSERT_EQUAL_UINT32(0u, sentry_http_response_for_status(429, 0, 0).retry_after_ms);
+}
+
+static void test_status_other_4xx_is_rejected_and_keeps_its_back_off(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(403, 0, 10000u);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_REJECTED, r.result);
+    TEST_ASSERT_EQUAL_UINT16(403, r.http_status);
+    TEST_ASSERT_EQUAL_UINT32(10000u, r.retry_after_ms);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_REJECTED, sentry_http_response_for_status(400, 0, 0).result);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_REJECTED, sentry_http_response_for_status(413, 0, 0).result);
+}
+
+static void test_status_5xx_and_others_are_errors(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(503, 2000u, 0);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, r.result);
+    TEST_ASSERT_EQUAL_UINT16(503, r.http_status);
+    TEST_ASSERT_EQUAL_UINT32(2000u, r.retry_after_ms);
+    /* Redirects are not followed, so one is an answer nobody can use. */
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, sentry_http_response_for_status(302, 0, 0).result);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, sentry_http_response_for_status(100, 0, 0).result);
+}
+
+static void test_status_without_a_status_line_is_an_error_with_no_status(void)
+{
+    sentry_response_t r = sentry_http_response_for_status(0, 5000u, 5000u);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, r.result);
+    TEST_ASSERT_EQUAL_UINT16(0, r.http_status);
+    TEST_ASSERT_EQUAL_UINT32(0u, r.retry_after_ms);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, sentry_http_response_for_status(-1, 0, 0).result);
+    r = sentry_http_response_for_status(70000, 0, 0);
+    TEST_ASSERT_EQUAL_INT(SENTRY_SEND_ERROR, r.result);
+    TEST_ASSERT_EQUAL_UINT16(0, r.http_status);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -244,5 +306,11 @@ int main(void)
     RUN_TEST(test_head_is_not_done_without_the_blank_line);
     RUN_TEST(test_head_cuts_an_over_long_line_without_losing_the_next);
     RUN_TEST(test_head_does_not_take_a_prefix_for_a_header);
+    RUN_TEST(test_status_2xx_is_ok_and_drops_any_back_off);
+    RUN_TEST(test_status_429_prefers_retry_after_over_rate_limits);
+    RUN_TEST(test_status_429_falls_back_to_rate_limits);
+    RUN_TEST(test_status_other_4xx_is_rejected_and_keeps_its_back_off);
+    RUN_TEST(test_status_5xx_and_others_are_errors);
+    RUN_TEST(test_status_without_a_status_line_is_an_error_with_no_status);
     return UNITY_END();
 }

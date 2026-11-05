@@ -104,14 +104,19 @@ src/                        the library
     sentry_transport_wifi.*     HTTPS straight to ingest
     sentry_transport_serial.*   relay through a USB host
     sentry_transport_auto.hpp   picks a route per delivery attempt, from a list of others
-    zephyr/                     the serial relay in C, over a Zephyr UART
+    sentry_ca_digicert_global_root_g2.*  the root the Zephyr and ESP-IDF WiFi transports trust
+    zephyr/                     the serial relay in C, over a Zephyr UART, and HTTPS over Zephyr's TLS sockets
+    esp-idf/                    HTTPS in C over esp_http_client, for ESP-IDF without Arduino
 zephyr/                     Zephyr module glue: module.yml, CMake, Kconfig
+CMakeLists.txt, Kconfig,
+idf_component.yml           ESP-IDF component glue: the repository root is the component
 test/                       host unit tests (Unity), run with `pio test`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
   wled_browser_relay/       WLED usermod — crash reports relayed through WLED's own web UI
   wled_http_forwarder/      WLED usermod — plain HTTP to a forwarder you run yourself
   zephyr_basic/             Zephyr application — boot event over the serial relay
+  idf_basic/                ESP-IDF application in C — boot event over WiFi and HTTPS
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
 .github/actions/            the same chain as a reusable GitHub Action
 partitions/                 reference partition tables (with a `coredump` partition)
@@ -188,6 +193,11 @@ options.dsn = "https://<key>@<org>.ingest.sentry.io/<project>";
 options.release = "my-firmware@1.0.0";
 sentry_init(&options);
 ```
+
+On ESP-IDF itself, without Arduino, the repository root is a component: add it by path in
+your `main/idf_component.yml` and register the C transport from
+`<transport/esp-idf/sentry_transport_wifi.h>`. [`examples/idf_basic`](examples/idf_basic) is
+the complete application; [ESP-IDF](#esp-idf) below has the details.
 
 `init` returns `false` on a bad DSN and leaves the SDK disabled rather than half-configured.
 Crash reporting must never be load-bearing: a firmware should always be able to ignore that
@@ -1148,6 +1158,25 @@ To use it, add this repository to `ZEPHYR_EXTRA_MODULES` (or your west manifest)
 [`examples/zephyr_basic`](examples/zephyr_basic) is a complete application with the exact
 build, flash and relay commands, and the network configuration the WiFi transport needs.
 
+### ESP-IDF
+
+The repository root is also an ESP-IDF component (`idf_component.yml`, `CMakeLists.txt`,
+`Kconfig`), built and run with ESP-IDF v6.1 on an ESP32-S3. An application adds it by path in
+its `main/idf_component.yml`, includes `<sentry_micro.h>`, and registers the C transport in
+`<transport/esp-idf/sentry_transport_wifi.h>`, which posts straight to ingest through
+`esp_http_client` with the certificate checked against the same bundled DigiCert Global Root
+G2 as on Zephyr (ESP-IDF's certificate bundle is a Kconfig alternative, off by default). The
+types and functions have the Zephyr transport's names, and the Kconfig options the Zephyr
+module's (`CONFIG_SENTRY_MICRO_SESSIONS`, `CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY`, ...). Events
+report `sdk.name` `sentry.micro.esp32`, the same as Arduino, and `os.name` `esp-idf`.
+
+Verified on an ESP32-S3 N16R8 with only its native USB: the boot event and the session updates
+reached ingest over TLS with the certificate checked, HTTP 200, and the event shows in Sentry
+with the device's own timestamp. The crash path compiles against v6.1 with the core dump reader
+linked in, but has not been run on this port yet. sentry-micro adds about 21 KB to the image
+(`idf.py size-components`). [`examples/idf_basic`](examples/idf_basic) has the build and flash
+commands and the full list of what is not checked yet.
+
 ### Partition table
 
 The stock Arduino partition tables have no `coredump` partition, so a panic has nowhere to
@@ -1240,6 +1269,9 @@ Not done:
 - [x] **Sessions / release health** — one boot per session, closed by the next boot from its
       reset reason, so the crash-free rate per release covers a fleet
 - [x] Breadcrumbs on the crash event — the log lines the crashed boot never sent
+- [x] **ESP-IDF component** — the repository root builds as an ESP-IDF v6.1 component with a
+      C HTTPS transport on `esp_http_client`; boot event delivered from an ESP32-S3
+- [ ] ESP-IDF crash path, breadcrumbs, logs, metrics and symbolication run on hardware
 - [ ] **WLED usermod** — the ready-made audience
 - [ ] Full RISC-V backtraces (needs server-side unwinding of the stack dump)
 
