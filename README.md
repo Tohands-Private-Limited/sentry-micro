@@ -116,7 +116,7 @@ examples/
   wled_browser_relay/       WLED usermod — crash reports relayed through WLED's own web UI
   wled_http_forwarder/      WLED usermod — plain HTTP to a forwarder you run yourself
   zephyr_basic/             Zephyr application — boot event over the serial relay
-  idf_basic/                ESP-IDF application in C — boot event over WiFi and HTTPS
+  idf_basic/                ESP-IDF application in C — boot event or crash over WiFi and HTTPS
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
 .github/actions/            the same chain as a reusable GitHub Action
 partitions/                 reference partition tables (with a `coredump` partition)
@@ -1172,8 +1172,10 @@ report `sdk.name` `sentry.micro.esp32`, the same as Arduino, and `os.name` `esp-
 
 Verified on an ESP32-S3 N16R8 with only its native USB: the boot event and the session updates
 reached ingest over TLS with the certificate checked, HTTP 200, and the event shows in Sentry
-with the device's own timestamp. The crash path compiles against v6.1 with the core dump reader
-linked in, but has not been run on this port yet. sentry-micro adds about 21 KB to the image
+with the device's own timestamp, and a certificate from the wrong root is refused. A
+deliberate crash is recovered from ESP-IDF's core dump on the next boot and reported as a fatal
+`StoreProhibited` event with its six-frame Xtensa backtrace, HTTP 200, after which the dump is
+erased. sentry-micro adds about 21 KB to the image
 (`idf.py size-components`). [`examples/idf_basic`](examples/idf_basic) has the build and flash
 commands and the full list of what is not checked yet.
 
@@ -1271,7 +1273,8 @@ Not done:
 - [x] Breadcrumbs on the crash event — the log lines the crashed boot never sent
 - [x] **ESP-IDF component** — the repository root builds as an ESP-IDF v6.1 component with a
       C HTTPS transport on `esp_http_client`; boot event delivered from an ESP32-S3
-- [ ] ESP-IDF crash path, breadcrumbs, logs, metrics and symbolication run on hardware
+- [x] ESP-IDF crash path — a panic recovered from the core dump and reported on the next boot
+- [ ] ESP-IDF breadcrumbs, logs, metrics and symbolication run on hardware
 - [ ] **WLED usermod** — the ready-made audience
 - [ ] Full RISC-V backtraces (needs server-side unwinding of the stack dump)
 

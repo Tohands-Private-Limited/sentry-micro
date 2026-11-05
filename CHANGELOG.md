@@ -515,3 +515,20 @@
 - `sentry_http_response_for_status()` in `core/sentry_http.c` maps an HTTP status and the two
   back-off headers to a `sentry_response_t`, the table the Zephyr transport applies inline,
   now host-tested. The ESP-IDF transport uses it.
+- ESP-IDF crash path, second milestone, verified on an ESP32-S3 with ESP-IDF v6.1: the demo's
+  null-pointer store three calls deep panics, ESP-IDF saves a 13,856-byte core dump to the
+  `coredump` partition, and the next boot reads `panic`, reports the crash instead of the boot
+  as a fatal `StoreProhibited` event (`accessing 0x00000000`, task `main`, six frames), HTTP
+  200, and only then erases the dump. The boot after that did not report it again. On that
+  path the main task had 4,992 of its 12,288 bytes of stack unused.
+- The ESP-IDF core dump reader zeroes the summary before handing it to
+  `esp_core_dump_get_summary()`. v6.1 fills only the parts it finds in the dump and returns
+  `ESP_OK` regardless: the backtrace is written only when a stack segment follows the crashed
+  task's TCB, so a dump without one would have produced stack garbage as frames.
+- Crash events carry the crashed app's ELF SHA-256 prefix, as ESP-IDF stores it in the core
+  dump (9 characters by default, `CONFIG_APP_RETRIEVE_LEN_ELF_SHA`), in
+  `contexts.esp32.app_elf_sha256`. It was read before but never sent. Absent on Zephyr.
+- The ESP-IDF transport's certificate check was run against a wrong root: with a self-signed
+  CA passed to `sentry_wifi_transport_init()`, the handshake fails
+  (`mbedtls_ssl_handshake returned -0x2700`), the send reports "no route", and the firmware
+  carries on.

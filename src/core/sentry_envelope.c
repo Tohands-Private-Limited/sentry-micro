@@ -283,6 +283,10 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event, uint
         sentry_json_kv_uint(writer, "frames_captured", event->coredump->frame_count);
         sentry_json_kv_bool(writer, "backtrace_truncated", event->coredump->truncated);
         sentry_json_kv_string_opt(writer, "crash_task", event->coredump->task_name);
+        /* The prefix of the crashed app's ELF SHA-256 that ESP-IDF wrote into the dump (9
+         * characters by default), to tell a dump left by an older firmware from one of this
+         * build. Absent where the port has none, as on Zephyr. */
+        sentry_json_kv_string_opt(writer, "app_elf_sha256", event->coredump->app_elf_sha256);
     }
     if (device) {
         sentry_json_kv_uint(writer, "chip_revision", device->chip_revision);

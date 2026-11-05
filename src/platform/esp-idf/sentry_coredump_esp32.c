@@ -181,6 +181,10 @@ bool sentry_coredump_read(sentry_coredump_t *out)
      * cost is that the calling task needs the headroom — documented on the declaration.
      */
     esp_core_dump_summary_t summary;
+    /* Zeroed first: ESP-IDF fills only the parts it finds (checked in v6.1). The backtrace is
+     * written only when a stack segment follows the crashed task's TCB in the dump, yet the
+     * call still returns ESP_OK, so an unset depth would be stack garbage taken as frames. */
+    memset(&summary, 0, sizeof(summary));
     if (esp_core_dump_get_summary(&summary) != ESP_OK) {
         return false;
     }

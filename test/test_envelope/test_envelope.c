@@ -658,6 +658,27 @@ static void test_truncated_backtraces_say_so(void)
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"crash_task\":\"loopTask\""));
 }
 
+/**
+ * The crashed firmware's ELF hash prefix rides the crash, so a dump an older build left
+ * behind can be told from one of the firmware now reporting it. A port that has none
+ * (Zephyr) leaves the key out rather than sending an empty string.
+ */
+static void test_crash_carries_the_app_elf_hash_when_known(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NULL(strstr(buf, "app_elf_sha256"));
+
+    snprintf(crash.app_elf_sha256, sizeof(crash.app_elf_sha256), "%s", "3f2a9c01b");
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"app_elf_sha256\":\"3f2a9c01b\""));
+}
+
 static void test_event_without_a_crash_has_no_exception(void)
 {
     sentry_device_info_t device = sample_device();
@@ -967,6 +988,7 @@ int main(void)
     RUN_TEST(test_pc_becomes_the_frame_when_the_unwinder_found_none);
     RUN_TEST(test_frames_are_reversed_for_sentry);
     RUN_TEST(test_truncated_backtraces_say_so);
+    RUN_TEST(test_crash_carries_the_app_elf_hash_when_known);
     RUN_TEST(test_event_without_a_crash_has_no_exception);
     RUN_TEST(test_envelope_header_length_matches_the_payload);
     RUN_TEST(test_envelope_reports_the_size_it_needs);
