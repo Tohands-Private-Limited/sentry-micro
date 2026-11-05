@@ -115,6 +115,19 @@ the same fixpoint, and uploads `<build-dir>/zephyr/zephyr.sentry.elf`, a stamped
 commands.
 
 
+On plain ESP-IDF (no Arduino), [`examples/idf_basic`](examples/idf_basic/README.md) is the
+first event: with ESP-IDF v6.1 set up (`. $IDF_PATH/export.sh`) and the secrets file sourced,
+
+```bash
+set -a; . ~/.config/sentry-micro/env; set +a
+cd examples/idf_basic
+idf.py set-target esp32s3 && idf.py build && idf.py -p /dev/ttyACM0 flash
+```
+
+The DSN, release and WiFi credentials are read when CMake configures; after changing one run
+`idf.py reconfigure`. The console is the S3's native USB-Serial-JTAG, set in the example's
+`sdkconfig.defaults`, because the board it was run on has no USB-UART bridge.
+
 ## Traps
 
 Each of these cost real time. None of them announce themselves.
@@ -184,6 +197,24 @@ TLS verification for an hour, because the sources had been restored before `west
 and the board kept getting the normal image. Flash a one-off image with esptool directly
 instead: `esptool --chip esp32s3 --port /dev/ttyACM0 --after hard-reset write-flash 0x0 image.bin`.
 
+**ESP-IDF 6.x no longer defines `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF`.** It is still
+`select`ed by `ESP_COREDUMP_ENABLE` in v6.1, but defined nowhere, so it never reaches
+`sdkconfig.h`; 6.0 dropped the binary format and with it the choice. The core dump reader
+used to require it alongside `ENABLE_TO_FLASH`, which under 6.x compiled crash reporting out
+with no message at all. `sentry_coredump_esp32.c` now asks only for `ENABLE_TO_FLASH` from 6.0
+on, and stops the build (a `#warning`, which ESP-IDF's `-Werror` makes fatal) if core dumps
+are on but neither destination symbol exists. To check a build really has the reader, look for
+`esp_core_dump_get_summary` among the undefined symbols of `libsentry-micro.a`.
+
+**clang-format sorts `freertos/FreeRTOS.h` after `freertos/event_groups.h`.** Case-sensitive
+include sorting puts the capitalised name last, and FreeRTOS refuses to compile any of its
+headers before `FreeRTOS.h`. ESP-IDF 6.0 also stopped `esp_event.h` pulling FreeRTOS in, so
+code that compiled on 5.x now includes these itself. Keep `FreeRTOS.h` in an include block
+of its own, as `examples/idf_basic/main/main.c` does.
+
+**`esp_http_client` takes a non-zero `cert_len` as DER.** For a PEM root, `cert_len` must be 0
+(NUL-terminated); a PEM passed with its length is parsed as DER and every handshake fails.
+
 ## Working on it
 
 ```bash
@@ -213,7 +244,13 @@ including how to keep `west` and PlatformIO in a `.venv/` inside this repository
 your home directory. The WiFi build also needs every hal_espressif blob, not just the S3's:
 Zephyr's WiFi driver checks the whole set at configure time (`west blobs fetch hal_espressif`).
 
-CI runs the host tests, a format check, and all five variant builds on every push.
+And, when you touch `core/`, `platform/esp-idf/`, `device/espressif/` or the root
+`CMakeLists.txt`/`Kconfig`, [`examples/idf_basic`](examples/idf_basic/README.md) with
+ESP-IDF v6.1: `idf.py set-target esp32s3 && idf.py build`. ESP-IDF builds components with
+`-Werror`, so a new warning there is a failed build.
+
+CI runs the host tests, a format check, and all five variant builds on every push. It does not
+build the Zephyr or ESP-IDF examples.
 
 ## What is not verified
 
@@ -263,6 +300,15 @@ chip's native USB, and again over WiFi):
   own. WiFi and the USB-Serial-JTAG console coexisted throughout. The negative case was run
   too: with a self-signed root passed in place of the bundled one, the handshake fails
   (`ECONNABORTED`), the transport reports "no route", and the firmware carries on.
+
+Verified on hardware (ESP32-S3 WROOM-1 N16R8 under ESP-IDF v6.1, over WiFi, console on the
+native USB):
+
+- **The boot event delivers** through the `esp_http_client` transport, over TLS with the
+  certificate checked against the bundled DigiCert root: HTTP 200, and the event is in Sentry
+  as `sentry.micro.esp32` with `os.name` `esp-idf` and the device's own SNTP timestamp. The
+  session updates went out on the same boot, HTTP 200 each. Not yet run on this port: the
+  crash path, breadcrumbs, logs, metrics, offline buffering and symbolication.
 
 Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
 

@@ -29,6 +29,32 @@ uint32_t sentry_http_rate_limits_ms(const char *value)
     return sentry_http_retry_after_ms(value);
 }
 
+sentry_response_t sentry_http_response_for_status(
+    int status, uint32_t retry_after_ms, uint32_t rate_limits_ms)
+{
+    if (status <= 0 || status > 999) {
+        return sentry_response_make(SENTRY_SEND_ERROR);
+    }
+
+    sentry_response_t response;
+    response.http_status = (uint16_t)status;
+    response.retry_after_ms = retry_after_ms ? retry_after_ms : rate_limits_ms;
+    if (status == 429) {
+        response.result = SENTRY_SEND_RATE_LIMITED;
+    } else if (status >= 200 && status < 300) {
+        response.result = SENTRY_SEND_OK;
+        response.retry_after_ms = 0;
+    } else if (status >= 400 && status < 500) {
+        /* Ingest understood the request and will not accept it: a bad key, or a malformed
+         * envelope. Retrying cannot change that, and a device in a boot loop retrying
+         * forever is how a project gets rate-limited for everyone. */
+        response.result = SENTRY_SEND_REJECTED;
+    } else {
+        response.result = SENTRY_SEND_ERROR;
+    }
+    return response;
+}
+
 void sentry_http_head_init(sentry_http_head_t *head)
 {
     if (head) {

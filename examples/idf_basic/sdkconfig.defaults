@@ -1,0 +1,20 @@
+# sentry-micro idf_basic. Board settings only: the DSN, release and WiFi credentials come from
+# the environment (see CMakeLists.txt) and never belong in this file or in sdkconfig.
+
+# The console on the S3's native USB-Serial-JTAG (/dev/ttyACM0). The board this was run on, an
+# ESP32-S3 N16R8 module, has no USB-UART bridge, so the default UART0 console would flash
+# fine and then print nowhere.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# 16 MB flash, and the table with the coredump partition.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The panic handler writes an ELF core dump to the partition above; sentry-micro reports it on
+# the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+
+# The TLS handshake runs on the task that sends, on top of the SDK's 2 KB envelope buffer.
+# The default 3.5 KB main task is far too small for that.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288

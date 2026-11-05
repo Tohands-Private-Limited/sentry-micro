@@ -1,0 +1,91 @@
+# sentry-micro as an ESP-IDF component. Option names match the Zephyr module's
+# (zephyr/Kconfig) wherever the option means the same thing, so a setting carries across.
+
+menu "sentry-micro"
+
+    config SENTRY_MICRO_SESSIONS
+        bool "Sessions, for release health"
+        default y
+        help
+            Count each boot as one session in Sentry's release health. The
+            session opens at sentry_init() and is closed by the next boot from
+            its reset reason: a panic, a watchdog or a brownout ends it as
+            crashed, anything else as exited. Updates are sent by
+            sentry_flush() once the device knows the date, because Sentry
+            drops a session that is not dated; a build with no clock source
+            never sends them. Needs a release in sentry_options_t.
+
+            The record is kept beside the log ring in RTC memory, which
+            survives a reset but not a power cycle. Logs and metrics are
+            switched with the SENTRY_MICRO_LOGS_ENABLED and
+            SENTRY_MICRO_METRICS_ENABLED defines rather than here.
+
+    config SENTRY_MICRO_TRANSPORT_WIFI
+        bool "WiFi transport: HTTPS straight to ingest"
+        default y
+        help
+            POST envelopes to Sentry ingest over HTTPS through esp_http_client
+            and ESP-TLS, with no host in between. Register it with
+            sentry_wifi_transport_init() from
+            <transport/esp-idf/sentry_transport_wifi.h>.
+
+            Despite the name it is not tied to the radio: it sends over the
+            interface lwIP routes through and is available whenever the
+            default interface has an IPv4 address. The application owns the
+            network: it brings WiFi (or Ethernet) up, and examples/idf_basic
+            shows how.
+
+            Never call it from a panic handler: the HTTP client and the TLS
+            handshake allocate from the heap.
+
+    config SENTRY_MICRO_WIFI_TLS_VERIFY
+        bool "Verify ingest's TLS certificate"
+        default y
+        depends on SENTRY_MICRO_TRANSPORT_WIFI
+        help
+            Check that the server's certificate chains to a trusted root and
+            names the ingest host. The root is DigiCert Global Root G2,
+            bundled with sentry-micro, which Sentry's ingest certificate
+            chains to; an application can pass its own root to
+            sentry_wifi_transport_init() instead. Certificate dates are not
+            checked unless MBEDTLS_HAVE_TIME_DATE is set, so this works before
+            the clock is.
+
+            The bundled root expires on 2038-01-15, and stops matching sooner
+            if Sentry moves ingest to a certificate from another root. Either
+            way every handshake then fails until the firmware carries a root
+            that matches, so a fleet that cannot be updated should consider
+            passing its own, or SENTRY_MICRO_WIFI_TLS_CRT_BUNDLE.
+
+            Turn it off only to debug a handshake, or for an endpoint whose
+            certificate cannot be verified. ESP-TLS then needs ESP_TLS_INSECURE
+            and ESP_TLS_SKIP_SERVER_CERT_VERIFY as well, and the build stops
+            until they are set. The connection is encrypted but not
+            authenticated: anything on the path can pose as ingest and read
+            the DSN key from the auth header. The transport logs a warning on
+            its first send.
+
+    config SENTRY_MICRO_WIFI_TLS_CRT_BUNDLE
+        bool "Trust ESP-IDF's certificate bundle instead of the bundled root"
+        default n
+        depends on SENTRY_MICRO_WIFI_TLS_VERIFY && MBEDTLS_CERTIFICATE_BUNDLE
+        help
+            Verify ingest against ESP-IDF's bundle of common root certificates
+            (esp_crt_bundle_attach) rather than the one DigiCert root
+            sentry-micro carries. The bundle keeps working if Sentry changes
+            certificate authority, at a cost of tens of KB of flash, set by
+            the MBEDTLS_DEFAULT_CERTIFICATE_BUNDLE choice. A CA passed to
+            sentry_wifi_transport_init() still takes precedence.
+
+    config SENTRY_MICRO_WIFI_TIMEOUT_MS
+        int "WiFi transport network timeout, in ms"
+        default 10000
+        range 1000 120000
+        depends on SENTRY_MICRO_TRANSPORT_WIFI
+        help
+            esp_http_client's network timeout, applied to each step of a
+            send: the connect and TLS handshake, each write of the request,
+            and the wait for the response headers. Name resolution is bounded
+            by lwIP instead.
+
+endmenu

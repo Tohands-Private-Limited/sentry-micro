@@ -1,0 +1,27 @@
+# sentry-micro as an ESP-IDF component: this manifest, the root CMakeLists.txt and the root
+# Kconfig. Add it to an application by path, as examples/idf_basic/main/idf_component.yml does.
+version: "0.1.0"
+description: "Sentry SDK for microcontrollers: crashes, reset reasons, sessions, logs and device telemetry, delivered to Sentry over HTTPS or any other transport."
+url: "https://github.com/getsentry/sentry-micro"
+repository: "https://github.com/getsentry/sentry-micro.git"
+license: "MIT"
+tags:
+  - sentry
+  - crash-reporting
+  - telemetry
+dependencies:
+  # Built and run on v6.1. The platform code also builds on the 4.4 and 5.5 releases the
+  # Arduino cores carry; older 5.x releases have not been tried.
+  idf: ">=5.0"
+# What a packaged copy leaves out: the other ports' examples and build output, the host tests
+# and the release tooling. Nothing here is read when the component is used by path.
+files:
+  exclude:
+    - "**/.pio/**"
+    - "**/build/**"
+    - "**/build-*/**"
+    - ".venv/**"
+    - ".github/**"
+    - "examples/**"
+    - "scripts/**"
+    - "test/**"

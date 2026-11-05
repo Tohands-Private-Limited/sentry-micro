@@ -15,6 +15,7 @@
 // clang-format off
 #include "sdkconfig.h"
 #include "esp_core_dump.h"
+#include "esp_idf_version.h"
 // clang-format on
 
 /*
@@ -22,11 +23,37 @@
  * hold by default in the Arduino core (verified in its sdkconfig.h), but a custom ESP-IDF
  * build can switch them off, and silently producing no backtraces would be worse than not
  * compiling. Degrade to "no core dump available" with a reason attached instead.
+ *
+ * ESP-IDF 6.0 dropped the binary format, and with it the ELF one as a choice: 6.x still
+ * `select`s ESP_COREDUMP_DATA_FORMAT_ELF from ESP_COREDUMP_ENABLE but defines it nowhere, so it
+ * never reaches sdkconfig.h (checked in the v6.1 tree). Requiring it there would compile crash
+ * reporting out of every 6.x build, without a word. From 6.0 on, a dump in flash is ELF by
+ * construction, so flash is the only condition. Below 6.0, which is what both Arduino cores
+ * are built on, the two-symbol check stands as it always has.
  */
-#if defined(CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH) && defined(CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#    if defined(CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH)
+#        define SENTRY_COREDUMP_SUPPORTED 1
+#    else
+#        define SENTRY_COREDUMP_SUPPORTED 0
+#    endif
+#elif defined(CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH) && defined(CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF)
 #    define SENTRY_COREDUMP_SUPPORTED 1
 #else
 #    define SENTRY_COREDUMP_SUPPORTED 0
+#endif
+
+/*
+ * Core dumps are on, yet none of the destinations this file knows is set: the only way to get
+ * here is ESP-IDF renaming the symbols, which is how the ELF one above went. Loud on purpose,
+ * because the alternative is a build that reports no crash and says nothing. ESP-IDF compiles
+ * with -Werror, so there this stops the build; a dump going to UART (or nowhere) is a choice
+ * and does not trip it.
+ */
+#if defined(CONFIG_ESP_COREDUMP_ENABLE) && !defined(CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH)           \
+    && !defined(CONFIG_ESP_COREDUMP_ENABLE_TO_UART)
+#    warning                                                                                       \
+        "sentry-micro: core dumps are enabled but neither CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH nor _TO_UART is defined; ESP-IDF may have renamed them, and crash reporting is compiled out"
 #endif
 
 /*

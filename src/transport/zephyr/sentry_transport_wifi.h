@@ -21,11 +21,12 @@
  * **What TLS checks.** With `CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY` (the default) the server's
  * chain must lead to the trusted root, and its certificate must name the ingest host. The
  * root is DigiCert Global Root G2, bundled in the module
- * (`sentry_ca_digicert_global_root_g2.c`) and valid until 2038-01-15, unless the application
- * passes its own. The certificate's *dates* are not checked: mbedTLS does that only with
- * `CONFIG_MBEDTLS_HAVE_TIME_DATE`, which is off by default and stays off here, so
- * verification works before SNTP has set the clock. An expired certificate on a host that
- * also presents the right name and chain is the residual risk that buys.
+ * (`transport/sentry_ca_digicert_global_root_g2.c`, shared with the ESP-IDF transport) and
+ * valid until 2038-01-15, unless the application passes its own. The certificate's *dates*
+ * are not checked: mbedTLS does that only with `CONFIG_MBEDTLS_HAVE_TIME_DATE`, which is off
+ * by default and stays off here, so verification works before SNTP has set the clock. An
+ * expired certificate on a host that also presents the right name and chain is the residual
+ * risk that buys.
  *
  * With verification off the connection is encrypted but not authenticated: a passive
  * listener reads nothing, but a captive portal or anyone on the path can pose as ingest and
@@ -50,6 +51,7 @@
 #if defined(__ZEPHYR__)
 
 #    include "../../core/sentry_transport.h"
+#    include "../sentry_ca_digicert_global_root_g2.h"
 
 #    ifdef __cplusplus
 extern "C" {
@@ -78,12 +80,6 @@ typedef struct {
     /** The CA is registered with the TLS credential store on first use. */
     bool credential_added;
 } sentry_wifi_transport_t;
-
-/**
- * The bundled root certificate, PEM, NUL-terminated: DigiCert Global Root G2, which Sentry's
- * ingest certificate chains to. Valid until 2038-01-15.
- */
-extern const char sentry_ca_digicert_global_root_g2[];
 
 /**
  * Fill in `t` and return the transport to register:

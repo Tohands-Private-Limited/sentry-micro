@@ -1,0 +1,18 @@
+# sentry-micro idf_basic — partition table for a 16 MB flash (ESP32-S3 N16R8).
+#
+# The stock single-app table plus a `coredump` partition, which is what makes a panic
+# recoverable: ESP-IDF's panic handler writes an ELF core dump there before the chip resets,
+# and on the next boot esp_core_dump_get_summary() reads the crashing task, the exception and
+# a backtrace out of it for sentry-micro to report.
+#
+# 128 KB rather than the 64 KB of partitions/sentry-coredump-4mb.csv: the dump holds every
+# task's stack, and with WiFi and lwIP running there are a good few of them. A dump that does
+# not fit is not written at all. 16 MB leaves room to spare.
+#
+# Offsets and sizes of app partitions must stay 64 KB (0x10000) aligned.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  0x300000,
+coredump,   data, coredump, 0x310000, 0x20000,

@@ -28,3 +28,9 @@ scratchpad/
 
 # Python bytecode from the release scripts (test/test_release imports one of them).
 __pycache__/
+
+# ESP-IDF example (examples/idf_basic): the configuration generated from sdkconfig.defaults,
+# and the component manager's lock file. Its build/ is covered above.
+examples/idf_basic/sdkconfig
+examples/idf_basic/sdkconfig.old
+examples/idf_basic/dependencies.lock

@@ -132,7 +132,7 @@ configures, like the DSN: change them, rebuild with `-p always`.
 
 **What TLS checks.** The server's certificate must chain to DigiCert Global Root G2, which
 Sentry's ingest certificate is issued under, and must name the ingest host. That root is
-bundled with sentry-micro (`src/transport/zephyr/sentry_ca_digicert_global_root_g2.c`) and
+bundled with sentry-micro (`src/transport/sentry_ca_digicert_global_root_g2.c`) and
 expires on 2038-01-15; a fleet that has to outlive it, or Sentry changing certificate
 authority before then, needs a root of its own passed to `sentry_wifi_transport_init()`.
 Certificate *dates* are not checked: mbedTLS checks them only with
