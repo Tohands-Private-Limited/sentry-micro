@@ -307,8 +307,17 @@ native USB):
 - **The boot event delivers** through the `esp_http_client` transport, over TLS with the
   certificate checked against the bundled DigiCert root: HTTP 200, and the event is in Sentry
   as `sentry.micro.esp32` with `os.name` `esp-idf` and the device's own SNTP timestamp. The
-  session updates went out on the same boot, HTTP 200 each. Not yet run on this port: the
-  crash path, breadcrumbs, logs, metrics, offline buffering and symbolication.
+  session updates went out on the same boot, HTTP 200 each. The negative case was run too: with
+  a self-signed root passed in place of the bundled one, the handshake fails
+  (`mbedtls_ssl_handshake returned -0x2700`), the send reports "no route", and the firmware
+  carries on.
+- **Crash -> reboot -> report from the core dump.** The demo's null store three calls deep
+  panics, ESP-IDF saves the core dump to flash (about 14 KB), and the next boot reads `panic`,
+  reports a fatal `StoreProhibited` event `accessing 0x00000000` in task `main` with six
+  frames instead of a boot event, HTTP 200, and then erases the dump; the boot after does not
+  report it again. The event in Sentry carries the crashed boot's two log lines as breadcrumbs.
+  Not yet run on this port: the `crashed` session checked in release health, logs, metrics,
+  offline buffering and symbolication.
 
 Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
 

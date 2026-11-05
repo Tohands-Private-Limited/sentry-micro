@@ -308,6 +308,7 @@ static bool report_crash(void)
     for (uint32_t i = 0; i < crash.frame_count; i++) {
         printf("  #%u 0x%08x\n", (unsigned)i, (unsigned)crash.frames[i]);
     }
+    printf("app elf sha256: %s\n", crash.app_elf_sha256);
     printf("──────────────────────────────────────────────\n");
 
     /* Same 2 KB as the SDK's own envelope buffer, and on this stack for the same reason: no

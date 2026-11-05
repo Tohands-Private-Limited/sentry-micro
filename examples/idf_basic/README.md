@@ -6,8 +6,8 @@ report either the crash the previous boot died of, with its backtrace, or else t
 event, posted straight to ingest over HTTPS with the certificate checked.
 
 Built with ESP-IDF v6.1 for the ESP32-S3 and run on an ESP32-S3 WROOM-1 N16R8 module that has
-only the chip's native USB (see [Console](#console)). The boot event reached Sentry. The crash
-path is built in but has not been run on this port yet.
+only the chip's native USB (see [Console](#console)). The boot event and a recovered crash
+both reached Sentry.
 
 ## Build
 
@@ -115,6 +115,58 @@ crash instead of the boot.
 The last line is the main task's headroom after the TLS handshake and the report, the figure
 to size `CONFIG_ESP_MAIN_TASK_STACK_SIZE` by. About 7 KB of the 12 KB were used.
 
+### After a crash
+
+With `-DSENTRY_DEMO_CRASH=1` the first boot reports itself as above, logs two lines and dies
+in `demo_crash_innermost()`. ESP-IDF prints the register dump and saves the core dump
+(`Core dump has been saved to flash.`, about 14 KB) before it restarts; on this board the
+console stayed up through that. The next boot, also a real run:
+
+```
+[sentry] recovered 2 log lines from the previous boot
+[sentry] holding them for the crash report, as breadcrumbs
+[sentry] previous session ended crashed (reset reason panic)
+...
+reset reason  : panic  <- previous boot crashed
+...
+[sentry] session crashed via wifi: result 0, http 200
+[sentry] session ok (init) via wifi: result 0, http 200
+[sentry] crash recovered: StoreProhibited in main, 6 frames, 2 breadcrumbs
+
+── crash recovered from the previous boot ────
+exception     : StoreProhibited
+task          : main
+pc            : 0x420109ba
+accessing     : 0x00000000
+backtrace     : 6 frames
+  #0 0x420109ba
+  #1 0x420109c7
+  #2 0x420109cf
+  #3 0x420110e9
+  #4 0x42008944
+  #5 0x420a7bb2
+app elf sha256: f144440f3
+──────────────────────────────────────────────
+[sentry] sent 1502 bytes via wifi: result 0, http 200
+[sentry] crash report: delivered (http 200)
+[sentry] core dump erased
+[sentry] crash event 3be6d0496fcc459ba7fbaf8e4a3d2226
+[mem] main task stack never used: 4992 bytes
+[sentry] crash reported; its 2 log lines went with it as breadcrumbs
+```
+
+The six frames are the three demo functions, `app_main`, and FreeRTOS's `main_task` and
+`vPortTaskWrapper` (`addr2line` on the build's ELF), the backtrace the panic handler printed.
+The event is fatal, titled `StoreProhibited` with `accessing 0x00000000`, and is sent instead
+of a `Device booted: panic` one. The dump is erased only once the send has succeeded; after a
+failed send `report_crash()` keeps it for the next boot (that branch has not been run). The
+boot after this one reported itself and no crash. `app elf sha256` is the prefix ESP-IDF keeps of the
+crashed firmware's ELF hash (`CONFIG_APP_RETRIEVE_LEN_ELF_SHA`, 9 characters by default); it
+goes out as `contexts.esp32.app_elf_sha256`. The frames are addresses until the ELF is
+uploaded to Sentry, which this example does not do yet.
+
+The crash path used no more stack than the boot path: 4,992 bytes of the 12 KB were left.
+
 **What TLS checks.** The server's certificate must chain to DigiCert Global Root G2, the root
 Sentry's ingest certificate is issued under, and must name the ingest host. That root is the
 same file the Zephyr transport trusts (`src/transport/sentry_ca_digicert_global_root_g2.c`)
@@ -124,7 +176,9 @@ instead, at a cost of tens of KB of flash. Certificate dates are not checked
 (`CONFIG_MBEDTLS_HAVE_TIME_DATE` is off by default), so verification works before SNTP has set
 the clock. `CONFIG_SENTRY_MICRO_WIFI_TLS_VERIFY=n` turns the check off; ESP-TLS then also needs
 `CONFIG_ESP_TLS_INSECURE` and `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`, and the build stops
-with a message until they are set.
+with a message until they are set. A wrong root is refused: with a self-signed CA passed to
+`sentry_wifi_transport_init()` the handshake fails (`mbedtls_ssl_handshake returned -0x2700`),
+every send reports "no route", and the firmware carries on.
 
 **Image size.** The whole application is 943,017 bytes. Of that, sentry-micro is 21,763
 (`idf.py size-components`): 17,457 of code and 1,361 of constants in flash, 1,741 of `.bss`,
@@ -132,14 +186,11 @@ and 1,204 of RTC memory for the log ring and session record that survive a reset
 
 ## Known gaps in this milestone
 
-- **The crash path has not been run on ESP-IDF.** It compiles against v6.1, the reader is
-  linked in (`esp_core_dump_get_summary()` is referenced), and the partition table has the
-  `coredump` partition, but no crash has been reported from this example yet.
-- **Not checked yet on this port:** breadcrumbs on a crash event, logs, metrics, symbolication
-  of crash frames, offline buffering (`platform/esp-idf/sentry_storage_nvs.c` is built but
-  this example does not register it), and the negative TLS case (a wrong root failing the
-  handshake).
+- **Not checked yet on this port:** the `crashed` session in Sentry's release health (the
+  SDK's log above says it went out, HTTP 200), logs, metrics, symbolication of crash frames, and
+  offline buffering (`platform/esp-idf/sentry_storage_nvs.c` is built but this example does not
+  register it). The crash event in Sentry does carry the two lines as breadcrumbs, three
+  seconds apart.
 - **No offline storage in the example.** An event that cannot be delivered is dropped; a
   recovered core dump is kept in flash and tried again on the next boot.
-- **The 12 KB main task** is the boot path measured with 5 KB to spare. The crash path,
-  which reads the core dump summary on the same stack, has not been measured.
+- **The 12 KB main task** has about 5 KB to spare on both the boot path and the crash path.
