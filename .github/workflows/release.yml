@@ -32,7 +32,7 @@ jobs:
   # ends up shipping with no debug files and nobody noticing.
   plan:
     name: Find build variants
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-0.5vcpu-2gb
     outputs:
       environments: ${{ steps.list.outputs.environments }}
     steps:
@@ -45,7 +45,7 @@ jobs:
   upload:
     name: Debug files (${{ matrix.environment }})
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-4vcpu-6gb
     strategy:
       # Every variant reports its own outcome. One failing board should not hide the
       # status of the other four.

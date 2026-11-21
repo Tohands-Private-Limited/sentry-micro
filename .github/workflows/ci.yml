@@ -20,7 +20,7 @@ concurrency:
 jobs:
   format:
     name: clang-format
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-2vcpu-2gb
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -35,7 +35,7 @@ jobs:
 
   test:
     name: Host unit tests
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-4vcpu-6gb
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -58,7 +58,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.env }}
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-4vcpu-6gb
     strategy:
       # Report every broken variant in one run rather than one per push — the whole point
       # of the matrix is finding out that, say, only the RISC-V target regressed.
@@ -92,7 +92,7 @@ jobs:
 
   release-action:
     name: Release action (build only)
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-4vcpu-6gb
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
